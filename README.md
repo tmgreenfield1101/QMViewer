@@ -5,6 +5,7 @@ So far, only a structure of the code is present. GUIs are defined and in many ca
 todo:
 - Implement the ability to retrigger sections of data
 - Write out triggered earthquake catalogues for relocation using locate. 
+- select events in the detect/trigger window
 - enable the ability to use archive waveforms rather than the saved waveforms from QM
 - implement instrument removal and the convolution of a Wood-Anderson response
 - implement amplitude picking
