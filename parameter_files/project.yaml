@@ -1,0 +1,5 @@
+endtime: '2023-12-01T00:00:00'
+lut_path: reykjanes_rise_tight.LUT
+project_name: nov23_dyke
+starttime: '2023-09-01T00:00:00'
+station_path: stations_tight.csv

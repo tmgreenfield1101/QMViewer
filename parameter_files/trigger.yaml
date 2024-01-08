@@ -1,0 +1,6 @@
+min_event_interval: 5
+marginal_window: 1
+normalise_coalescence: True
+threshold_method: dynamic
+mad_window_length: 1800
+mad_multiplier: 4

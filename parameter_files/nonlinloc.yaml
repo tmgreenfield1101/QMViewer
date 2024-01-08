@@ -1,0 +1,60 @@
+gt_out: /space/tg286/iceland/reykjanes/qmigrate/may21/nov23_dyke_tight/nonlinloc/time/rise
+gt_ttimeFileRoot: /space/tg286/iceland/reykjanes/qmigrate/may21/nov23_dyke_tight/nonlinloc/model/rise
+message_flag: 1
+nll_locgau:
+  CorrLen: 0.0
+  SigmaTime: 0.0
+nll_locgau2:
+  SigmaTfraction: 0.01
+  SigmaTmax: 0.5
+  SigmaTmin: 0.05
+nll_locgrid:
+  dimension: 3
+  dx: 0.5
+  grid_type: PROB_DENSITY
+  num:
+  - 91
+  - 91
+  - 51
+  orig:
+  - 0
+  - 0
+  - -1
+nll_locmeth:
+  VpVsRatio: false
+  iRejectDuplicateArrivals: true
+  maxDistStaGrid: false
+  maxNum3DGridMemory: false
+  maxNumberPhases: false
+  method: EDT_OT_WT
+  minDistStaGrid: false
+  minNumberPhases: 4
+  minNumberSphases: false
+nll_locqual2err:
+  0: 0.01
+  1: 0.02
+  2: 0.05
+  3: 0.1
+  4: 9999
+nll_locsearch:
+  initNumCells_x: 10
+  initNumCells_y: 10
+  initNumCells_z: 10
+  maxNumNodes: 20000
+  minNodeSize: 0.01
+  numScatter: 5000
+  stopOnMinNodeSize: false
+  type: OCT
+  useStationsDensity: false
+nll_signature: Tim Greenfield
+random_number: 12345
+transform: none
+vg_grid:
+  dimension: 2
+  dx: 0.1
+  grid_type: SLOW_LEN
+  num:
+  - 1000
+  - 500
+  orig: -5
+vg_out: /space/tg286/iceland/reykjanes/qmigrate/may21/nov23_dyke_tight/model/rise

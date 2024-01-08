@@ -1,0 +1,11 @@
+decimate: [4,4,2]
+onset_function: ClassicSTALTA
+phases: ["P","S"]
+bandpass_filters:
+  P: [2, 16, 2]
+  S: [2, 16, 2]
+sta_lta_windows:
+  P: [0.2, 1]
+  S: [0.2, 1]
+timestep: 30
+
