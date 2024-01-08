@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout, QTextEdit, QWidg
 from PySide6.QtWidgets import QCheckBox, QPushButton, QDateTimeEdit, QRadioButton
 from PySide6.QtWidgets import QButtonGroup, QGroupBox, QLineEdit, QMessageBox
 from PySide6.QtGui import QIntValidator
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import pandas as pd
@@ -21,6 +21,7 @@ class DetectTriggerWindow(QWidget):
 
         self.init_ui()
 
+        print(self.canvas)
     def init_ui(self):
 
         page_layout = QHBoxLayout()
@@ -214,18 +215,20 @@ class DetectTriggerWindow(QWidget):
         self.fig.tight_layout()
         self.canvas = FigureCanvas(self.fig)
 
-        # self.canvas.mpl_connect("axes_enter_event", self.on_enter_axes)
+        self.canvas.mpl_connect("axes_enter_event", self.on_enter_axes)
         self.canvas.mpl_connect("button_press_event", self.on_mouse_click)
         self.canvas.mpl_connect("button_release_event", self.on_mouse_release)
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        print("YES")
+        self.canvas.mpl_connect("key_press_event", self.on_key_press)
         self.mouse_press = None
 
     def on_enter_axes(self, event):
-        print('enter_axes', event.inaxes)
-        if event.inaxes == self.coatime_ax:
-            event.inaxes.patch.set_facecolor('yellow')
-            event.canvas.draw()
-    
+        self.canvas.setFocus()
+        # print('enter_axes', event.inaxes)
+        # if event.inaxes == self.coatime_ax:
+        #     event.inaxes.patch.set_facecolor('yellow')
+        #     event.canvas.draw()  
     def on_mouse_click(self, event):
         self.mouse_press = (event.xdata, event.ydata)
         if event.button == 1 and event.inaxes == self.coatime_ax:
@@ -265,8 +268,7 @@ class DetectTriggerWindow(QWidget):
             self.backgroundzoom = self.canvas.copy_from_bbox(self.zoom_box_zoom.axes.bbox)
             self.coatimezoom_ax.draw_artist(self.zoom_box_zoom)
             self.coatimezoom_ax.draw_artist(self.max_zoom_line_zoom)
-            self.canvas.blit(self.coatimezoom_ax.bbox)
-    
+            self.canvas.blit(self.coatimezoom_ax.bbox) 
     def on_mouse_move(self, event):
         if event.button == 1 and event.inaxes == self.coatime_ax:
             pass
@@ -295,7 +297,6 @@ class DetectTriggerWindow(QWidget):
             self.coatimezoom_ax.draw_artist(self.zoom_box_zoom)
             self.coatimezoom_ax.draw_artist(self.max_zoom_line_zoom)
             self.canvas.blit(self.coatimezoom_ax.bbox)
-
     def on_mouse_release(self, event):
         if event.button == 1 and event.inaxes == self.coatime_ax:
             xdata = event.xdata
@@ -311,7 +312,7 @@ class DetectTriggerWindow(QWidget):
         self.zoom_box.set_animated(False)
         self.background = None
 
-        self.coatimezoom_ax.set_xlim(self.mouse_press[0], xdata)
+        self.coatimezoom_ax.set_xlim(*sorted([self.mouse_press[0], xdata]))
         if self.min_zoom_line_zoom:
             self.min_zoom_line_zoom.remove()
             self.max_zoom_line_zoom.remove()
@@ -321,9 +322,16 @@ class DetectTriggerWindow(QWidget):
 
         print(self.mouse_press[0], xdata)
         self.mouse_press = None
-
-        
-
+    def _go_home(self):
+        focustime = pd.to_datetime(self.focustime_widget.dateTime().toPython(), utc=True)
+        half_length = pd.to_timedelta(int(self.focuslength_widget.text()), unit="S") / 2
+        self.coatimezoom_ax.set_xlim(focustime-half_length, focustime+half_length)
+        self.coatime_ax.set_xlim(focustime-half_length, focustime+half_length)
+    def on_key_press(self, event):
+        print("Key Press", event.key)
+        if event.key == "h":
+            self._go_home()
+            self.canvas.draw()
         
 
 def plot_mapview(ax, stations, events, 
