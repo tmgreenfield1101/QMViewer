@@ -1,9 +1,11 @@
 from util import *
 from quakemigrate.io import read_lut
-from obspy import read, Stream, UTCDateTime
+from obspy import read, Stream, UTCDateTime, read_inventory
 import pandas as pd
 import numpy as np
 import os
+
+from quakemigrate.io.data import WaveformData
 
 manual_pick_columns = ["Network", "Station", "Location", "Channel", 
                        "Quality", "Polarity", "Type", "Phase",
@@ -304,6 +306,7 @@ class LocateRun():
     
     def get_waveforms(self, uid, processed=True):
         st = read(os.path.join(self.waveforms_filepath, f"{uid}.m"))
+
         if processed:
             st.detrend("linear")
             st.taper(type="cosine", max_percentage=0.05)
@@ -317,7 +320,21 @@ class LocateRun():
                                             freqmax=self.onset["bandpass_filters"]["P"][1],
                                             corners=self.onset["bandpass_filters"]["P"][2],
                                             zerophase=True)
-        return st
+        print(os.getcwd())
+        wf = WaveformData(min([tr.stats.starttime for tr in st]), 
+                            max([tr.stats.starttime for tr in st]),
+                            stations=pd.Series(list(set([tr.stats.station for tr in st]))),
+                            response_inv=read_inventory(os.path.join(
+                                self.project.filepath, 
+                                self.response_file)
+                                ),
+                            water_level=self.response_params["water_level"],
+                            pre_filt=self.response_params["pre_filt"],
+                            remove_full_response=False,
+                            read_all_stations=True)
+        wf.raw_waveforms = st.copy()
+        wf.waveforms = wf.raw_waveforms.copy()
+        return wf
 
     def save_manual_picks(self, uid, picks, path):
         os.makedirs(os.path.join(path, "manual_picks"), exist_ok=True)

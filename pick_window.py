@@ -118,8 +118,6 @@ class Picking(QWidget):
         os.makedirs(os.path.join(self.locate_run.project.nll_settings.root, "manual_locations"), exist_ok=True)
 
     def plot_waveforms(self):
-        if not self.raw_stream:
-            self.load_waveforms()
         
         self.pick_cursors = []
         if not self.current_station:
@@ -127,7 +125,7 @@ class Picking(QWidget):
             # self.current_station = "LYNG"
             self.set_current_station_in_list()
 
-        ymax = np.max([np.max(np.abs(tr.data)) for tr in self.proc_stream.select(station=self.current_station)]) * 1.1
+        ymax = np.max([np.max(np.abs(tr.data)) for tr in self.current_stream.select(station=self.current_station)]) * 1.1
         self.drawn_waveforms = {}
         for ax, comp in zip(self.axes, "ZNE"):
             self.drawn_waveforms[ax] = []
@@ -135,7 +133,8 @@ class Picking(QWidget):
             ax.set_yticklabels([])
             self.pick_cursors.append(ax.axvline(0, c="r"))
 
-            st = self.proc_stream.select(station=self.current_station, component=comp)
+            st = self.current_stream.select(station=self.current_station, component=comp)
+            st = preprocess_stream(st.copy(), self.filter, self.taper, self.detrend)
             if len(st) == 0:
                 self.drawn_waveforms[ax].append(ax.axhline(0, c="gray"))
                 continue
@@ -247,6 +246,230 @@ class Picking(QWidget):
                 self.E_ax.axvline(time_offset(picktime,self.current_event.DT), c="blue", lw=0.5)
                 self.N_ax.axvline(time_offset(picktime,self.current_event.DT), c="blue", lw=0.5)
 
+    def load_waveforms(self):
+        if self._use_qm_waveforms:
+            self.waveform_data = self.locate_run.get_waveforms(self.uid, processed=False)
+
+
+        if self.removeresponse_widget.isChecked() and self.velocity_button.isChecked():
+            self.real_waveforms = Stream(self.waveform_data.get_real_waveform(tr) for tr in self.waveform_data.raw_waveforms)
+            self.current_stream = self.real_waveforms
+        elif self.removeresponse_widget.isChecked() and self.woodanderson_button.isChecked():
+            self.wa_waveforms = Stream(self.waveform_data.get_wa_waveform(tr) for tr in self.waveform_data.raw_waveforms)
+            self.current_stream = self.wa_waveforms
+        else:
+            self.current_stream = self.waveform_data.raw_waveforms
+
+        # take the streams and create a lookup dataframe
+        self.waveform_lookup = pd.DataFrame({"network" : [tr.stats.network for tr in self.waveform_data.raw_waveforms],
+                                             "station" : [tr.stats.station for tr in self.waveform_data.raw_waveforms],
+                                             "location" : [tr.stats.location for tr in self.waveform_data.raw_waveforms],
+                                             "channel" : [tr.stats.channel for tr in self.waveform_data.raw_waveforms],
+                                             "component" : [tr.stats.component for tr in self.waveform_data.raw_waveforms],
+                                             "starttime" : [tr.stats.starttime for tr in self.waveform_data.raw_waveforms],
+                                             "endtime" : [tr.stats.endtime for tr in self.waveform_data.raw_waveforms],
+                                             "sampling_rate" : [tr.stats.sampling_rate for tr in self.waveform_data.raw_waveforms]})
+        self.waveform_lookup.set_index(["station", "component"], inplace=True)
+        self.waveform_lookup.sort_index(inplace=True)
+        self.waveform_lookup = self.waveform_lookup.loc[~self.waveform_lookup.index.duplicated(),:]
+        
+    def update_proc_waveforms(self):
+        # self.waveform_data.waveforms = preprocess_stream(self.waveform_data.raw_waveforms, self.filter, self.taper, self.detrend)
+        pass
+        
+    def add_hyp_distance_to_picks(self, picks):
+        stations = picks.index.get_level_values(0)
+        station_info = self.locate_run.project.stations
+        picks.loc[:,"hyp_distance"] = np.array(np.sqrt((self.current_event.Xproj-station_info.loc[stations,"Xproj"])**2 + 
+                                    (self.current_event.Yproj-station_info.loc[stations,"Yproj"])**2))
+        return picks
+        
+    def define_parameters(self):
+        self.uid = self.current_event.EventID
+        ## manual_picks
+        self.manual_picks = self.locate_run.get_manual_picks(self.uid, self.locate_run.project.nll_settings.root)
+        print(self.manual_picks.Quality)
+        self.qm_picks = self.locate_run.get_picks(self.uid)
+        self.qm_picks = self.add_hyp_distance_to_picks(self.qm_picks)
+        self.current_stations = np.array(list(set(self.qm_picks.index.get_level_values(0).to_list())))
+        
+        # processing paramters
+        self.filter = self._set_filter(self.locate_run.onset["bandpass_filters"].get("P", [None,None,None])[0],
+                                       self.locate_run.onset["bandpass_filters"].get("P", [None,None,None])[1],
+                                       self.locate_run.onset["bandpass_filters"].get("P", [None,None,None])[2],
+                                       True)
+        self.detrend = True
+        self.taper = self._set_taper(0.05)
+
+        self.waveform_data = None
+        self.real_waveforms = None
+        self.wa_waveforms = None
+        self.current_stream = None
+
+        self.current_station = None
+
+        ## plotting
+        self.xlim = None
+        self.ylim = None
+        self.y_zoom_mode = False
+        self.mouse_click_start_pos = None
+
+        ## picking
+        self.selected_phase = None # key button press for selecting P or S phase. If None base choice on which axes
+        self.current_phase = None
+        self.current_pick = None
+
+
+        self._use_qm_waveforms = True
+
+    def init_ui(self):   
+        page_layout = QHBoxLayout()
+        left_layout = QVBoxLayout() 
+
+        ## LABELS
+        # UID
+        # OTIME
+        # MAGNITUDE
+        # LAT
+        # LON
+        # DEP
+
+        ## CLIENT TO USE - RADIO BUTTONS
+        # radio button widget
+        self.qmwaveforms_widget = QGroupBox(self)
+        # self.qmwaveforms_widget.setCheckable(True)
+        self.qmwaveforms_widget.setChecked(False)
+        vbox = QVBoxLayout()
+        self.qmwaveforms_button = QRadioButton("Use QM waveforms", self)
+        self.archivewaveforms_button = QRadioButton("Use Archive waveforms", self)
+        self.qmwaveforms_button.setChecked(True)
+        vbox.addWidget(self.qmwaveforms_button)
+        vbox.addWidget(self.archivewaveforms_button)
+        vbox.addStretch(1)
+        self.qmwaveforms_widget.setLayout(vbox)
+        
+        self.maxamplitude_widget = QPushButton("Get Max Amplitude")
+        self.loadwaveforms_widget = QPushButton("Load Waveforms")
+        self.savepicks_widget = QPushButton("Save Picks")
+
+        ## CLIENT TO USE - RADIO BUTTONS
+        # radio button widget
+        self.removeresponse_widget = QGroupBox("Response Removal", self)
+        self.removeresponse_widget.setCheckable(True)
+        self.removeresponse_widget.setChecked(False)
+        vbox = QVBoxLayout()
+        self.velocity_button = QRadioButton("Remove Response", self)
+        self.woodanderson_button = QRadioButton("Apply Wood-Anderson Response", self)
+        self.velocity_button.setChecked(True)
+        self.response_button_group = QButtonGroup()
+        self.response_button_group.addButton(self.velocity_button)
+        self.response_button_group.addButton(self.woodanderson_button)
+        vbox.addWidget(self.velocity_button)
+        vbox.addWidget(self.woodanderson_button)
+        vbox.addStretch(1)
+        self.removeresponse_widget.setLayout(vbox)                
+        
+        # list of stations with distance
+        self.station_list_widget = QListWidget(self)
+        self.load_list_of_stations(self.current_stations)
+        
+        ## add the matplotlib figure canvas
+        self.fig, self.axes = plt.subplots(3, 1, sharex=True)
+        self.Z_ax = self.axes[0]
+        self.N_ax = self.axes[1]
+        self.E_ax = self.axes[2]
+        plt.tight_layout(pad=1e-5, h_pad=1e-5, w_pad=1e-5)
+        self.canvas = FigureCanvas(self.fig)
+        self.canvas.setFocusPolicy( QtCore.Qt.ClickFocus )
+
+        # low and highpass filters
+        self.lowpass_widget = QLineEdit(str(self.filter.lowpass), self,
+                                                validator=QDoubleValidator(bottom=0.))
+        self.highpass_widget = QLineEdit(str(self.filter.highpass), self,
+                                                validator=QDoubleValidator(bottom=0.))
+        self.corners_widget = QLineEdit(str(self.filter.corners), self,
+                                                validator=QIntValidator(2, 10))
+        self.zerophase_widget = QCheckBox("Zerophase", self)
+        self.zerophase_widget.setChecked(True)
+        self.detrend_widget = QCheckBox("Detrend", self)
+        self.detrend_widget.setChecked(True)
+        self.taper_widget = QCheckBox("Taper", self)
+        self.taper_widget.setChecked(True)
+        self.maxpercentage_widget = QLineEdit(str(self.taper.maxpercentage), self,
+                                                validator=QDoubleValidator(bottom=0.01, top=0.5))
+
+        left_layout.addWidget(self.qmwaveforms_widget)
+        left_layout.addWidget(self.loadwaveforms_widget)
+        left_layout.addWidget(self.maxamplitude_widget)
+        left_layout.addWidget(self.removeresponse_widget)
+
+        line_layout = QHBoxLayout()
+        line_layout.addWidget(QLabel("Highpass Freq [Hz]"))
+        line_layout.addWidget(self.highpass_widget)
+        left_layout.addLayout(line_layout)
+        line_layout = QHBoxLayout()
+        line_layout.addWidget(QLabel("Lowpass Freq [Hz]"))
+        line_layout.addWidget(self.lowpass_widget)
+        left_layout.addLayout(line_layout)
+        line_layout = QHBoxLayout()
+        line_layout.addWidget(QLabel("N Corners"))
+        line_layout.addWidget(self.corners_widget)
+        left_layout.addLayout(line_layout)
+
+        left_layout.addWidget(self.zerophase_widget)
+        left_layout.addWidget(self.detrend_widget)
+        left_layout.addWidget(self.taper_widget)
+
+        line_layout = QHBoxLayout()
+        line_layout.addWidget(QLabel("Max Percentage"))
+        line_layout.addWidget(self.maxpercentage_widget)
+        left_layout.addLayout(line_layout)
+
+        left_layout.addWidget(self.station_list_widget)
+        left_layout.addWidget(self.savepicks_widget)
+        left_layout.addStretch(1)
+
+        page_layout.addLayout(left_layout)
+        page_layout.addWidget(self.canvas, stretch=10)
+        self.setLayout(page_layout)
+        
+    def setup_connections(self):
+        self.loadwaveforms_widget.clicked.connect(self._clicked_load_waveforms)
+        self.savepicks_widget.clicked.connect(self.save_picks)
+        self.highpass_widget.editingFinished.connect(self._set_highpass_filter)
+        self.lowpass_widget.editingFinished.connect(self._set_lowpass_filter)
+        self.corners_widget.editingFinished.connect(self._set_corners)
+        self.zerophase_widget.stateChanged.connect(self._set_zerophase)
+        self.detrend_widget.stateChanged.connect(self._set_detrend)
+        self.taper_widget.stateChanged.connect(self._set_use_taper)
+        self.maxpercentage_widget.editingFinished.connect(self._set_maxpercentage)
+        self.station_list_widget.itemClicked.connect(self._set_current_station)
+
+        self.removeresponse_widget.toggled.connect(self._remove_response_toggled)
+        # self.velocity_button.toggled.connect(self._remove_response2)
+        # self.woodanderson_button.toggled.connect(self._remove_response3)
+        self.response_button_group.buttonClicked.connect(self._remove_response_toggled)
+
+    def _remove_response_toggled(self):
+        do_remove_response = self.removeresponse_widget.isChecked()
+        if do_remove_response:
+            if self.response_button_group.checkedButton() == self.velocity_button:
+                if not self.real_waveforms:
+                    print("REMOVING RESPONSE", "REAL")
+                    self.real_waveforms = Stream(self.waveform_data.get_real_waveform(tr) for tr in self.waveform_data.raw_waveforms)
+                self.current_stream = self.real_waveforms
+            else:
+                if not self.waveform_data.wa_waveforms:
+                    print("REMOVING RESPONSE", "WA")
+                    self.wa_waveforms = Stream(self.waveform_data.get_wa_waveform(tr) for tr in self.waveform_data.raw_waveforms)
+                self.current_stream = self.wa_waveforms
+
+            
+        else:
+            self.current_stream = self.waveform_data.raw_waveforms
+        
+        self.redraw_waveforms()
+
     def draw_current_pick(self):
         if self.current_pick.phase == "P":
             lines = [self.manual_ppick_lines, self.manual_spick_lines]
@@ -345,14 +568,15 @@ class Picking(QWidget):
                     continue
                 for line in lines:
                     line.remove()
-        
+
         # now plot new lines
-        ymax = np.max([np.max(np.abs(tr.data)) for tr in self.proc_stream.select(station=self.current_station)]) * 1.1
+        ymax = np.max([np.max(np.abs(tr.data)) for tr in self.current_stream.select(station=self.current_station)]) * 1.1
         self.drawn_waveforms = {}
         for ax, comp in zip(self.axes, "ZNE"):
             self.drawn_waveforms[ax] = []
 
-            st = self.proc_stream.select(station=self.current_station, component=comp)
+            st = self.current_stream.select(station=self.current_station, component=comp)
+            st = preprocess_stream(st.copy(), self.filter, self.taper, self.detrend)
             if len(st) == 0:
                 self.drawn_waveforms[ax].append(ax.axhline(0, c="gray"))
                 continue
@@ -505,7 +729,10 @@ class Picking(QWidget):
             self.zoom("down", event.xdata, np.abs(event.step))
 
         self.canvas.draw()
-
+    def _clicked_load_waveforms(self):
+        if not self.waveform_data:
+            self.load_waveforms()
+            self.plot_waveforms()
     def on_mouse_click(self, event):
         print("mouse click", type(event), event)
         if not event.inaxes:
@@ -581,197 +808,8 @@ class Picking(QWidget):
         else:
             return  
     def on_enter_axes(self, event):
-        print("enter axes")
+        self.canvas.setFocus()
         return
-
-    def load_waveforms(self):
-        if self._use_qm_waveforms:
-            self.raw_stream = self.locate_run.get_waveforms(self.uid, processed=False)
-
-        self.proc_stream = preprocess_stream(self.raw_stream.copy(), self.filter, self.taper, self.detrend)
-
-        # take the streams and create a lookup dataframe
-        self.waveform_lookup = pd.DataFrame({"network" : [tr.stats.network for tr in self.proc_stream],
-                                             "station" : [tr.stats.station for tr in self.proc_stream],
-                                             "location" : [tr.stats.location for tr in self.proc_stream],
-                                             "channel" : [tr.stats.channel for tr in self.proc_stream],
-                                             "component" : [tr.stats.component for tr in self.proc_stream],
-                                             "starttime" : [tr.stats.starttime for tr in self.proc_stream],
-                                             "endtime" : [tr.stats.endtime for tr in self.proc_stream],
-                                             "sampling_rate" : [tr.stats.sampling_rate for tr in self.proc_stream]})
-        self.waveform_lookup.set_index(["station", "component"], inplace=True)
-        self.waveform_lookup.sort_index(inplace=True)
-        self.waveform_lookup = self.waveform_lookup.loc[~self.waveform_lookup.index.duplicated(),:]
-        
-    def update_proc_waveforms(self):
-        print(self.taper.type)
-        self.proc_stream = preprocess_stream(self.raw_stream.copy(), self.filter, self.taper, self.detrend)
-        
-    def add_hyp_distance_to_picks(self, picks):
-        stations = picks.index.get_level_values(0)
-        station_info = self.locate_run.project.stations
-        picks.loc[:,"hyp_distance"] = np.array(np.sqrt((self.current_event.Xproj-station_info.loc[stations,"Xproj"])**2 + 
-                                    (self.current_event.Yproj-station_info.loc[stations,"Yproj"])**2))
-        return picks
-        
-    def define_parameters(self):
-        self.uid = self.current_event.EventID
-        ## manual_picks
-        self.manual_picks = self.locate_run.get_manual_picks(self.uid, self.locate_run.project.nll_settings.root)
-        print(self.manual_picks.Quality)
-        self.qm_picks = self.locate_run.get_picks(self.uid)
-        self.qm_picks = self.add_hyp_distance_to_picks(self.qm_picks)
-        self.current_stations = np.array(list(set(self.qm_picks.index.get_level_values(0).to_list())))
-        
-        # processing paramters
-        self.filter = self._set_filter(self.locate_run.onset["bandpass_filters"].get("P", [None,None,None])[0],
-                                       self.locate_run.onset["bandpass_filters"].get("P", [None,None,None])[1],
-                                       self.locate_run.onset["bandpass_filters"].get("P", [None,None,None])[2],
-                                       True)
-        self.detrend = True
-        self.taper = self._set_taper(0.05)
-
-        self.raw_stream = None
-        self.proc_stream = None
-        self.vel_stream = None
-        self.wa_stream = None
-
-        self.current_station = None
-
-        ## plotting
-        self.xlim = None
-        self.ylim = None
-        self.y_zoom_mode = False
-        self.mouse_click_start_pos = None
-
-        ## picking
-        self.selected_phase = None # key button press for selecting P or S phase. If None base choice on which axes
-        self.current_phase = None
-        self.current_pick = None
-
-
-        self._use_qm_waveforms = True
-
-    def init_ui(self):   
-        page_layout = QHBoxLayout()
-        left_layout = QVBoxLayout() 
-
-        ## LABELS
-        # UID
-        # OTIME
-        # MAGNITUDE
-        # LAT
-        # LON
-        # DEP
-
-        ## CLIENT TO USE - RADIO BUTTONS
-        # radio button widget
-        self.qmwaveforms_widget = QGroupBox(self)
-        # self.qmwaveforms_widget.setCheckable(True)
-        self.qmwaveforms_widget.setChecked(False)
-        vbox = QVBoxLayout()
-        self.qmwaveforms_button = QRadioButton("Use QM waveforms", self)
-        self.archivewaveforms_button = QRadioButton("Use Archive waveforms", self)
-        self.qmwaveforms_button.setChecked(True)
-        vbox.addWidget(self.qmwaveforms_button)
-        vbox.addWidget(self.archivewaveforms_button)
-        vbox.addStretch(1)
-        self.qmwaveforms_widget.setLayout(vbox)
-        
-        self.maxamplitude_widget = QPushButton("Get Max Amplitude")
-        self.loadwaveforms_widget = QPushButton("Load Waveforms")
-        self.savepicks_widget = QPushButton("Save Picks")
-
-        ## CLIENT TO USE - RADIO BUTTONS
-        # radio button widget
-        self.removeresponse_widget = QGroupBox("Response Removal", self)
-        self.removeresponse_widget.setCheckable(True)
-        self.removeresponse_widget.setChecked(False)
-        vbox = QVBoxLayout()
-        self.velocity_button = QRadioButton("Remove Response", self)
-        self.woodanderson_button = QRadioButton("Apply Wood-Anderson Response", self)
-        self.velocity_button.setChecked(True)
-        vbox.addWidget(self.velocity_button)
-        vbox.addWidget(self.woodanderson_button)
-        vbox.addStretch(1)
-        self.removeresponse_widget.setLayout(vbox)                
-        
-        # list of stations with distance
-        self.station_list_widget = QListWidget(self)
-        self.load_list_of_stations(self.current_stations)
-        
-        ## add the matplotlib figure canvas
-        self.fig, self.axes = plt.subplots(3, 1, sharex=True)
-        self.Z_ax = self.axes[0]
-        self.N_ax = self.axes[1]
-        self.E_ax = self.axes[2]
-        plt.tight_layout(pad=1e-5, h_pad=1e-5, w_pad=1e-5)
-        self.canvas = FigureCanvas(self.fig)
-        self.canvas.setFocusPolicy( QtCore.Qt.ClickFocus )
-
-        # low and highpass filters
-        self.lowpass_widget = QLineEdit(str(self.filter.lowpass), self,
-                                                validator=QDoubleValidator(bottom=0.))
-        self.highpass_widget = QLineEdit(str(self.filter.highpass), self,
-                                                validator=QDoubleValidator(bottom=0.))
-        self.corners_widget = QLineEdit(str(self.filter.corners), self,
-                                                validator=QIntValidator(2, 10))
-        self.zerophase_widget = QCheckBox("Zerophase", self)
-        self.zerophase_widget.setChecked(True)
-        self.detrend_widget = QCheckBox("Detrend", self)
-        self.detrend_widget.setChecked(True)
-        self.taper_widget = QCheckBox("Taper", self)
-        self.taper_widget.setChecked(True)
-        self.maxpercentage_widget = QLineEdit(str(self.taper.maxpercentage), self,
-                                                validator=QDoubleValidator(bottom=0.01, top=0.5))
-
-        left_layout.addWidget(self.qmwaveforms_widget)
-        left_layout.addWidget(self.loadwaveforms_widget)
-        left_layout.addWidget(self.maxamplitude_widget)
-        left_layout.addWidget(self.removeresponse_widget)
-
-        line_layout = QHBoxLayout()
-        line_layout.addWidget(QLabel("Highpass Freq [Hz]"))
-        line_layout.addWidget(self.highpass_widget)
-        left_layout.addLayout(line_layout)
-        line_layout = QHBoxLayout()
-        line_layout.addWidget(QLabel("Lowpass Freq [Hz]"))
-        line_layout.addWidget(self.lowpass_widget)
-        left_layout.addLayout(line_layout)
-        line_layout = QHBoxLayout()
-        line_layout.addWidget(QLabel("N Corners"))
-        line_layout.addWidget(self.corners_widget)
-        left_layout.addLayout(line_layout)
-
-        left_layout.addWidget(self.zerophase_widget)
-        left_layout.addWidget(self.detrend_widget)
-        left_layout.addWidget(self.taper_widget)
-
-        line_layout = QHBoxLayout()
-        line_layout.addWidget(QLabel("Max Percentage"))
-        line_layout.addWidget(self.maxpercentage_widget)
-        left_layout.addLayout(line_layout)
-
-        left_layout.addWidget(self.station_list_widget)
-        left_layout.addWidget(self.savepicks_widget)
-        left_layout.addStretch(1)
-
-        page_layout.addLayout(left_layout)
-        page_layout.addWidget(self.canvas, stretch=10)
-        self.setLayout(page_layout)
-        
-    def setup_connections(self):
-        self.loadwaveforms_widget.clicked.connect(self.plot_waveforms)
-        self.savepicks_widget.clicked.connect(self.save_picks)
-        self.highpass_widget.editingFinished.connect(self._set_highpass_filter)
-        self.lowpass_widget.editingFinished.connect(self._set_lowpass_filter)
-        self.corners_widget.editingFinished.connect(self._set_corners)
-        self.zerophase_widget.stateChanged.connect(self._set_zerophase)
-        self.detrend_widget.stateChanged.connect(self._set_detrend)
-        self.taper_widget.stateChanged.connect(self._set_use_taper)
-        self.maxpercentage_widget.editingFinished.connect(self._set_maxpercentage)
-        self.station_list_widget.itemClicked.connect(self._set_current_station)
-
     def save_picks(self):
         print("SAVING PICKS", self.manual_picks)
         self.locate_run.save_manual_picks(self.uid, self.manual_picks, self.locate_run.project.nll_settings.root)
@@ -795,7 +833,7 @@ class Picking(QWidget):
         self.station_list_widget.scrollToItem(self.station_list_widget.currentItem())
         self._set_current_station(self.station_list_widget.currentItem())
     def _set_current_station(self, item):
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         print("NEW_STATION", item.text())
         self.current_station = item.text()
@@ -806,7 +844,7 @@ class Picking(QWidget):
         self.plot_waveforms()
     def _set_highpass_filter(self):
         self.filter.highpass = float(self.highpass_widget.text())
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
@@ -822,37 +860,36 @@ class Picking(QWidget):
             self.lowpass_widget.setReadOnly(True)
             self.highpass_widget.setReadOnly(True)
             self.corners_widget.setReadOnly(True)
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
-        self.update_proc_waveforms()
         self.redraw_waveforms()
     def _set_lowpass_filter(self):
         self.filter.lowpass = float(self.lowpass_widget.text())
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
     def _set_corners(self):
         self.filter.corners = int(self.corners_widget.text())
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
     def _set_zerophase(self):
         self.filter.zerophase = self.zerophase_widget.isChecked()
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
     def _set_maxpercentage(self):
         self.taper.maxpercentage = float(self.maxpercentage_widget.text())
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
     def _set_detrend(self):
         self.detrend = self.detrend_widget.isChecked()
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
@@ -862,7 +899,7 @@ class Picking(QWidget):
         else:
             self.taper = self._set_taper(float(self.maxpercentage_widget.text()))
         print("SETTER", self.taper.type, self.taper_widget.isChecked())
-        if not self.raw_stream:
+        if not self.waveform_data:
             return
         self.update_proc_waveforms()
         self.redraw_waveforms()
