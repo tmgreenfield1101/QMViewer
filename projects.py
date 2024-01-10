@@ -4,6 +4,7 @@ from obspy import read, Stream, UTCDateTime, read_inventory
 import pandas as pd
 import numpy as np
 import os
+import ast
 
 from quakemigrate.io.data import WaveformData
 
@@ -11,6 +12,13 @@ manual_pick_columns = ["Network", "Station", "Location", "Channel",
                        "Quality", "Polarity", "Type", "Phase",
                        "PickTime"]
 manual_pick_index = pd.MultiIndex.from_arrays([[],[]], names=["Station", "Phase"])
+
+amplitude_pick_columns = ["Network", "Station", "Location", "Channel", 
+                            "Component", "StreamID",
+                            "RawAmplitude", "RawPeriod", "RawTime",
+                            "RealAmplitude", "RealPeriod", "RealTime",
+                            "WAAmplitude", "WAPeriod", "WATime", "QMFlag", "Filter"]
+amplitude_pick_index = pd.MultiIndex.from_arrays([[],[]], names=["Station", "Component"])
 
 class Project():
     """QM project conatiner"""
@@ -352,6 +360,24 @@ class LocateRun():
                                    "Polarity":str,
                                    "Type":str})
         picks.rename(columns={"Station.1":"Station", "Phase.1":"Phase"}, inplace=True)
+        return picks
+    
+    def save_amplitude_picks(self, uid, picks, path):
+        os.makedirs(os.path.join(path, "amplitude_picks"), exist_ok=True)
+        picks.to_csv(os.path.join(path, "amplitude_picks", f"{uid}.csv"))
+        return
+    def get_amplitude_picks(self, uid, path):
+        fname = os.path.join(path, "amplitude_picks", f"{uid}.csv")
+        if not os.path.exists(fname):
+            return pd.DataFrame([], columns=amplitude_pick_columns, index=amplitude_pick_index)
+        picks = pd.read_csv(fname, index_col=[0,1], parse_dates=[10,13,16], 
+                            dtype={"Network":str,
+                                   "Station":str,
+                                   "Channel":str,
+                                   "Location":str})
+        print(picks)
+        picks.rename(columns={"Station.1":"Station", "Component.1":"Component"}, inplace=True)
+        picks.loc[:,"Filter"] = picks.loc[:,"Filter"].apply(ast.literal_eval)
         return picks
 
 if __name__ == "__main__":

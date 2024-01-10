@@ -112,6 +112,11 @@ class Filter():
         self._corners = None
         self._zerophase = False
 
+    def as_dict(self):
+        return {"type":self._type, "lowpass":self._lowpass, 
+                "highpass":self._highpass, "corners":self._corners,
+                "zerophase":self._zerophase}
+
 #     def __str__(self):
 #         return f"""
 # {type}
@@ -228,7 +233,7 @@ def preprocess_stream(stream, filter, taper, detrend):
         
     return stream
 
-class Pick():
+class Pick:
     def __init__(self, network, station, location, channel,
                  phase, picktime, quality, onset, polarity,
                  amplitude, period):

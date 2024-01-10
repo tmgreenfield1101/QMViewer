@@ -7,8 +7,6 @@ todo:
 - Write out triggered earthquake catalogues for relocation using locate. 
 - select events in the detect/trigger window
 - enable the ability to use archive waveforms rather than the saved waveforms from QM
-- implement instrument removal and the convolution of a Wood-Anderson response
-- implement amplitude picking
 - implement magnitude calculation
 - implement a better system of warnings and errors rather than print to screen
 - bugs, bugs, bugs

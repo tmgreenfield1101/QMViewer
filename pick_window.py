@@ -117,6 +117,88 @@ class Picking(QWidget):
         os.makedirs(os.path.join(self.locate_run.project.nll_settings.root, "manual_picks"), exist_ok=True)
         os.makedirs(os.path.join(self.locate_run.project.nll_settings.root, "manual_locations"), exist_ok=True)
 
+    def _pick_amplitude(self):
+
+        if not self.real_waveforms:
+            self.real_waveforms = Stream(self.waveform_data.get_real_waveform(tr) for tr in self.waveform_data.raw_waveforms)
+        if not self.wa_waveforms:
+            self.wa_waveforms = Stream(self.waveform_data.get_wa_waveform(tr) for tr in self.waveform_data.raw_waveforms)
+
+        
+        for prefix, stream in zip(["Raw", "Real", "WA"], 
+                                  [self.waveform_data.raw_waveforms, self.real_waveforms, self.wa_waveforms]):
+            cols = ["Network", "Station", "Location", "Channel", "Component", "StreamID",
+                    prefix+"Amplitude", prefix+"Time", prefix+"Period", "QMFlag"]
+            stream = preprocess_stream(stream.copy(), self.filter, self.taper, self.detrend)
+            for tr in stream:
+                # check for manual pick
+                if (tr.stats.station, "P") in self.manual_picks.index:
+                    ptraveltime = time_offset(self.manual_picks.loc[(tr.stats.station, "P"), "PickTime"],
+                                              self.current_event.DT)
+                    qmflag = False
+                elif (tr.stats.station, "S") in self.manual_picks.index:
+                    ptraveltime = time_offset(self.manual_picks.loc[(tr.stats.station, "S"), "PickTime"],
+                                              self.current_event.DT) / 1.73
+                    qmflag = False
+                elif (tr.stats.station, "P") in self.qm_picks.index:
+                    ptraveltime = time_offset(self.qm_picks.loc[(tr.stats.station, "P"), "ModelledTime"].tz_convert(None),
+                                              self.current_event.DT)
+                    qmflag = True
+                elif (tr.stats.station, "S") in self.qm_picks.index:
+                    ptraveltime = time_offset(self.qm_picks.loc[(tr.stats.station, "S"), "ModelledTime"].tz_convert(None),
+                                              self.current_event.DT) / 1.73
+                    qmflag = True
+                else:
+                    continue
+                
+                window = ptraveltime-1, ptraveltime+10
+                tarray = tr.times(reftime=UTCDateTime(self.current_event.DT))
+                mask = (tarray>window[0]) & (tarray<window[1])
+
+                if np.sum(mask) == 0:
+                    continue
+
+                maxamplitude = np.max(np.abs(tr.data[mask]))
+                mgrid = np.mgrid[:len(tr)][mask]
+                maxamp_time = self.current_event.DT + pd.to_timedelta(tarray[mgrid[np.argmax(np.abs(tr.data[mask]))]], "S")
+
+                
+                self.current_amplitudes.loc[(tr.stats.station, tr.stats.component), cols] = [tr.stats.network, tr.stats.station, 
+                                                                                             tr.stats.location, tr.stats.channel,
+                                                                                             tr.stats.component, tr.id,
+                                                                                             maxamplitude, maxamp_time, None, qmflag]
+        self.current_amplitudes.loc[:,"Filter"] = self.filter.as_dict()
+
+    def plot_amplitude(self):
+        if self.removeresponse_widget.isChecked() and self.velocity_button.isChecked():
+            prefix = "Real"
+        elif self.removeresponse_widget.isChecked() and self.woodanderson_button.isChecked():
+            prefix = "WA"
+        else:
+            prefix = "Raw"
+
+        for line in self.amplines:
+            try:
+                line.remove()
+            except ValueError:
+                continue
+
+        for ax, comp in zip(self.axes, "ZNE"):
+            if (self.current_station, comp) not in self.current_amplitudes.index:
+                continue
+            amp = self.current_amplitudes.loc[(self.current_station, comp), prefix+"Amplitude"]
+            if pd.isna(amp):
+                continue
+            self.amplines.append(ax.axhline(amp, lw="0.5", ls=":", c="purple"))
+            amptime = self.current_amplitudes.loc[(self.current_station, comp), prefix+"Time"]
+            print(amptime, self.current_event.DT)
+            try:
+                amptime = time_offset(amptime, self.current_event.DT)
+            except TypeError:
+                amptime = time_offset(amptime, self.current_event.DT.tz_convert(None))
+            self.amplines.append(ax.axvline(amptime, lw="0.5", ls=":", c="purple"))
+        self.canvas.draw()
+
     def plot_waveforms(self):
         
         self.pick_cursors = []
@@ -250,7 +332,6 @@ class Picking(QWidget):
         if self._use_qm_waveforms:
             self.waveform_data = self.locate_run.get_waveforms(self.uid, processed=False)
 
-
         if self.removeresponse_widget.isChecked() and self.velocity_button.isChecked():
             self.real_waveforms = Stream(self.waveform_data.get_real_waveform(tr) for tr in self.waveform_data.raw_waveforms)
             self.current_stream = self.real_waveforms
@@ -272,7 +353,18 @@ class Picking(QWidget):
         self.waveform_lookup.set_index(["station", "component"], inplace=True)
         self.waveform_lookup.sort_index(inplace=True)
         self.waveform_lookup = self.waveform_lookup.loc[~self.waveform_lookup.index.duplicated(),:]
-        
+
+        # # populate amplitudes
+        # self.current_amplitudes.loc[:, "Network"] = [tr.stats.network for tr in self.waveform_data.raw_waveforms]
+        # self.current_amplitudes.loc[:, "Station"] = [tr.stats.station for tr in self.waveform_data.raw_waveforms]
+        # self.current_amplitudes.loc[:, "Location"] = [tr.stats.location for tr in self.waveform_data.raw_waveforms]
+        # self.current_amplitudes.loc[:, "Channel"] = [tr.stats.channel for tr in self.waveform_data.raw_waveforms]
+        # self.current_amplitudes.loc[:, "Component"] = [tr.stats.component for tr in self.waveform_data.raw_waveforms]
+        # self.current_amplitudes.loc[:, "StreamID"] = [tr.id for tr in self.waveform_data.raw_waveforms]
+        # self.current_amplitudes.set_index(["Station", "Component"], inplace=True)
+        # self.current_amplitudes.sort_index(inplace=True)
+        # self.current_amplitudes = self.current_amplitudes.loc[~self.current_amplitudes.index.duplicated(),:]
+
     def update_proc_waveforms(self):
         # self.waveform_data.waveforms = preprocess_stream(self.waveform_data.raw_waveforms, self.filter, self.taper, self.detrend)
         pass
@@ -288,7 +380,6 @@ class Picking(QWidget):
         self.uid = self.current_event.EventID
         ## manual_picks
         self.manual_picks = self.locate_run.get_manual_picks(self.uid, self.locate_run.project.nll_settings.root)
-        print(self.manual_picks.Quality)
         self.qm_picks = self.locate_run.get_picks(self.uid)
         self.qm_picks = self.add_hyp_distance_to_picks(self.qm_picks)
         self.current_stations = np.array(list(set(self.qm_picks.index.get_level_values(0).to_list())))
@@ -308,11 +399,15 @@ class Picking(QWidget):
 
         self.current_station = None
 
+        # amplitude picking
+        self.current_amplitudes = self.locate_run.get_amplitude_picks(self.uid, self.locate_run.project.nll_settings.root)
+
         ## plotting
         self.xlim = None
         self.ylim = None
         self.y_zoom_mode = False
         self.mouse_click_start_pos = None
+        self.amplines = []
 
         ## picking
         self.selected_phase = None # key button press for selecting P or S phase. If None base choice on which axes
@@ -326,14 +421,6 @@ class Picking(QWidget):
         page_layout = QHBoxLayout()
         left_layout = QVBoxLayout() 
 
-        ## LABELS
-        # UID
-        # OTIME
-        # MAGNITUDE
-        # LAT
-        # LON
-        # DEP
-
         ## CLIENT TO USE - RADIO BUTTONS
         # radio button widget
         self.qmwaveforms_widget = QGroupBox(self)
@@ -342,6 +429,7 @@ class Picking(QWidget):
         vbox = QVBoxLayout()
         self.qmwaveforms_button = QRadioButton("Use QM waveforms", self)
         self.archivewaveforms_button = QRadioButton("Use Archive waveforms", self)
+        self.archivewaveforms_button.setCheckable(False)
         self.qmwaveforms_button.setChecked(True)
         vbox.addWidget(self.qmwaveforms_button)
         vbox.addWidget(self.archivewaveforms_button)
@@ -444,6 +532,7 @@ class Picking(QWidget):
         self.taper_widget.stateChanged.connect(self._set_use_taper)
         self.maxpercentage_widget.editingFinished.connect(self._set_maxpercentage)
         self.station_list_widget.itemClicked.connect(self._set_current_station)
+        self.maxamplitude_widget.clicked.connect(self._clicked_maxamplitude)
 
         self.removeresponse_widget.toggled.connect(self._remove_response_toggled)
         # self.velocity_button.toggled.connect(self._remove_response2)
@@ -586,6 +675,8 @@ class Picking(QWidget):
             ax.set_ylim(-ymax, ymax)
         self.ylim = (-ymax, ymax)
         self.canvas.draw()
+
+        self.plot_amplitude()
 
     def set_polarity(self, direction):
         if not self.current_pick or self.current_pick.phase == "S":
@@ -733,6 +824,10 @@ class Picking(QWidget):
         if not self.waveform_data:
             self.load_waveforms()
             self.plot_waveforms()
+            self.plot_amplitude()
+    def _clicked_maxamplitude(self):
+        self._pick_amplitude()
+        self.plot_amplitude()
     def on_mouse_click(self, event):
         print("mouse click", type(event), event)
         if not event.inaxes:
@@ -813,6 +908,9 @@ class Picking(QWidget):
     def save_picks(self):
         print("SAVING PICKS", self.manual_picks)
         self.locate_run.save_manual_picks(self.uid, self.manual_picks, self.locate_run.project.nll_settings.root)
+        if len(self.current_amplitudes) > 0 and not np.all(pd.isna(self.current_amplitudes.RawAmplitude)):
+            self.locate_run.save_amplitude_picks(self.uid, self.current_amplitudes, self.locate_run.project.nll_settings.root)
+        # self.
     def load_list_of_stations(self, stations):
         self.station_list_widget.clear()
         self.list_of_stations = [QListWidgetItem(s, self.station_list_widget) for s in stations]
@@ -841,7 +939,9 @@ class Picking(QWidget):
         # clear the axes and redraw
         for ax in self.axes:
             ax.clear()
+        self.amplines = []
         self.plot_waveforms()
+        self.plot_amplitude()
     def _set_highpass_filter(self):
         self.filter.highpass = float(self.highpass_widget.text())
         if not self.waveform_data:
