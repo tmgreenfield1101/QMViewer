@@ -7,6 +7,7 @@ import os
 import ast
 
 from quakemigrate.io.data import WaveformData
+from quakemigrate.signal.local_mag import Magnitude
 
 manual_pick_columns = ["Network", "Station", "Location", "Channel", 
                        "Quality", "Polarity", "Type", "Phase",
@@ -280,6 +281,11 @@ class LocateRun():
             self.onset = settings["onset"]
             self.picker = settings["picker"]
             self.marginal_window = settings["marginal_window"]   
+            if isinstance(self.mag_params["A0"], dict):
+                n = self.mag_params["A0"]["n"]
+                k = self.mag_params["A0"]["k"]
+                ref_distance = self.mag_params["A0"]["ref_distance"]
+                self.mag_params["A0"] = lambda dist: n*np.log10(dist/ref_distance) + k*(dist-ref_distance) + 2.
         else:
             print()
             raise NotImplementedError("manual reading of detect parameters not implemented yet")
@@ -379,6 +385,20 @@ class LocateRun():
         picks.rename(columns={"Station.1":"Station", "Component.1":"Component"}, inplace=True)
         picks.loc[:,"Filter"] = picks.loc[:,"Filter"].apply(ast.literal_eval)
         return picks
+
+    def reformat_amplitudes(self, amps, dists, ids, depth):
+        """reformats amplitudes to that used by QM for magnitude calculation"""
+        stations = [trid.split(".")[1] for trid in ids]
+        zdist = depth + self.project.stations.loc[stations,"Elevation"]
+        return pd.DataFrame({"epi_dist" : dists,"z_dist" : zdist.to_numpy(),
+                             "P_amp":np.nan,"P_freq":np.nan,"P_Time":pd.NaT,
+                             "P_avg_amp":np.nan,"P_filter_gain":np.nan,
+                             "S_amp":amps.to_numpy()*1e3, "S_freq":np.nan, "S_time":pd.NaT,
+                             "S_avg_amp":np.nan,"S_filter_gain":np.nan,
+                             "Noise_amp":0.0, "is_picked":True}, 
+                             index=ids.to_numpy())
+
+
 
 if __name__ == "__main__":
     prj = Project("/space/tg286/iceland/reykjanes/qmigrate/may21/nov23_dyke_tight")

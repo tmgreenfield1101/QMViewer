@@ -785,3 +785,4 @@ def _read_line_to_dict(line):
     if not line_length%2 == 0:
         raise ValueError("Length of line should be even", line, line_length)
     return dict([(line[i], line[i+1]) for i in range(0,line_length,2)])
+

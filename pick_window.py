@@ -2,7 +2,7 @@ import matplotlib
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QHBoxLayout, QListWidget, QWidget
 from PySide6.QtWidgets import QCheckBox, QPushButton, QDateTimeEdit, QListWidgetItem
 from PySide6.QtWidgets import QButtonGroup, QGroupBox, QLineEdit, QMessageBox, QTabWidget
-from PySide6.QtWidgets import QRadioButton
+from PySide6.QtWidgets import QRadioButton, QComboBox
 from PySide6.QtGui import QIntValidator, QDoubleValidator
 from PySide6.QtWidgets import QApplication
 from PySide6 import QtCore
@@ -13,6 +13,8 @@ from obspy import UTCDateTime
 import mplstereonet
 plt.close("all")
 import os, shutil
+
+from quakemigrate.signal.local_mag import Magnitude
 
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import pandas as pd
@@ -61,12 +63,14 @@ class PickWindow(QWidget):
         self.tab3 = Wadati(self.locate_run, self.current_event.EventID)
         self.tab4 = FPS(self.locate_run)
         self.tab5 = TravelTime(self.locate_run, self.current_event)
+        self.tab6 = MagnitudeWindow(self.locate_run, self.current_event)
 
         self.tab_widget.addTab(self.tab1, 'Picking')
         self.tab_widget.addTab(self.tab2, 'NonLinLoc')
         self.tab_widget.addTab(self.tab3, 'Wadati')
         self.tab_widget.addTab(self.tab4, 'Fault Plane Solution')
         self.tab_widget.addTab(self.tab5, 'Travel Time')
+        self.tab_widget.addTab(self.tab6, "Magntiude")
 
         # pd.merge(self.tab1.manual_picks, self.tab2.current_nll_event.phases, 
         #                          left_index=True, right_index=True, how="outer")
@@ -74,6 +78,7 @@ class PickWindow(QWidget):
         self.setLayout(layout)
 
     def tab_bar_clicked(self, index):
+        print(index)
         if index == 3:
             # Fault Plane Solution
             if len(self.tab2.current_nll_event.phases) > 0:
@@ -100,6 +105,15 @@ class PickWindow(QWidget):
             if len(self.tab5.manual_picks) > 0:
                 self.tab5.plot_manual_picks()
                 self.tab5.plot_manual_traveltimes()
+        
+        if index == 5:
+            # magnitude
+            print("YES")
+            self.tab6.manual_picks = self.tab1.manual_picks
+            self.tab6.current_amplitudes = self.tab1.current_amplitudes
+            self.tab6.current_nll_event = self.tab2.current_nll_event
+            if len(self.tab6.current_amplitudes) > 0:
+                self.tab6.plot_amplitudes()
 
     def setup_connections(self):
         self.tab_widget.tabBarClicked.connect(self.tab_bar_clicked)
@@ -1940,14 +1954,12 @@ class TravelTime(QWidget):
 
         return dvec[:i], traveltimes[0,:i, j]
 
-
     def add_epi_distance_to_picks(self, picks):
         stations = picks.index.get_level_values(0)
         station_info = self.locate_run.project.stations
         picks.loc[:,"epi_distance"] = np.array(np.sqrt((self.current_event.Xproj-station_info.loc[stations,"Xproj"])**2 + 
                                     (self.current_event.Yproj-station_info.loc[stations,"Yproj"])**2))
         return picks
-
 
     def define_parameters(self):
 
@@ -2086,8 +2098,6 @@ class TravelTime(QWidget):
             self.annot.set_visible(True)
             self.highlighter.set_visible(True)
             self.canvas.draw()
-
-
     def update_annot(self, marker, ind, i):
         x,y = marker.get_data()
         self.highlighter.set_xdata([x[ind["ind"][0]]])
@@ -2098,6 +2108,270 @@ class TravelTime(QWidget):
         self.annot.set_text(text)
         self.annot.get_bbox_patch().set_alpha(0.4)  
 
+class MagnitudeWindow(QWidget):
+    def __init__(self, locate_run, event):
+        super().__init__()
+
+        self.locate_run = locate_run
+        self.current_event = event
+        self.uid = self.current_event.EventID
+
+        self.define_parameters()
+        self.init_ui()
+        self.init_plot()
+        self.setup_connections()
+
+    def calculate_magnitude(self):
+        self.Magnitude = Magnitude({"A0":self.A0})
+        self.Magnitude.use_hyp_dist = self.hypdist_widget.isChecked()
+        self.Magnitude.noise_filter = 0.0
+
+        amps, ids = self.get_amplitudes(self.amplitude_prefix)
+        dists = self.get_distances(amps)
+        self.QM_current_amplitudes = self.locate_run.reformat_amplitudes(amps, dists, ids, self.current_nll_event.Z)
+        self.QM_current_magnitudes = self.Magnitude.calculate_magnitudes(self.QM_current_amplitudes)
+        self.mean_mag, _mean_mag_err, _mag_r_squared, _all_mags = self.Magnitude.mean_magnitude(self.QM_current_magnitudes)
+        print(self.QM_current_magnitudes)
+        print("MEAN MAG", self.mean_mag, _mean_mag_err)
+        self.plot_A0_magnitudes()
+
+    def get_amplitudes(self, prefix):
+        if not self.plotqm_amps_widget.isChecked():
+            df = self.current_amplitudes.loc[~self.current_amplitudes.QMFlag,:]
+        else:
+            df = self.current_amplitudes.copy()
+
+        if self.select_Z_widget.isChecked():
+            amps = df.loc[(slice(None),"Z"), prefix+"Amplitude"]
+            ids = df.loc[(slice(None),"Z"), "StreamID"]
+        else:
+            amps = df.loc[(slice(None),["E","N"]), prefix+"Amplitude"]
+            ids = df.loc[(slice(None),["E","N"]), "StreamID"]
+            if self.combine_hor_widget.isChecked():
+                print(amps)
+                print(ids)
+                amps = amps.groupby(level=0).mean()
+                ids = ids.groupby(level=0).first()
+        return amps, ids
+
+    def get_distances(self, amps):
+        nll_station_dists = self.current_nll_event.phases.Distance.groupby(level=0).mean()
+        try:
+            # quick way to get distance 
+            distances = nll_station_dists.loc[amps.index.get_level_values(0)]
+        except:
+            distances = self._get_distances(amps.index.get_level_values(0), 
+                                           try_this=nll_station_dists)
+        return np.asarray(distances)
+
+    def plot_A0_magnitudes(self):
+        dist_min = np.floor(self.ax.get_xlim()[0])
+        if dist_min < 0.1:
+            dist_min = 0.1
+        dist_max = np.ceil(self.ax.get_xlim()[1]) 
+        distances = np.linspace(dist_min, dist_max, 100)
+        att = self.Magnitude._get_attenuation(distances)
+
+        predicted_amp = np.power(10, self.mean_mag-att)
+        # predicted_amp = self.mean_mag-att
+
+        self.ax.semilogy(distances, predicted_amp/1000, "r-")
+        self.canvas.draw()
+
+    def plot_amplitudes(self):
+        # if self.slct_wa_wdgt.isChecked():
+        #     prefix = "WA"
+        # elif self.slct_rl_wdgt.isChecked():
+        #     prefix = "Real"
+        # elif self.slct_rw_wdgt.isChecked():
+        #     prefix = "Raw"
+        # else:
+        #     raise Exception("IMPOSSIBLE")
+        
+        self.ax.clear()
+
+        amps, trids = self.get_amplitudes(self.amplitude_prefix)
+        if isinstance(amps.index, pd.MultiIndex):
+            self.names = [" ".join(ind) for ind in amps.index]
+        else:
+            self.names = amps.index
+
+        distances = self.get_distances(amps)
+
+        self.annot = self.ax.annotate("", xy=(0,0), xytext=(-20,20),textcoords="offset points",
+                            bbox=dict(boxstyle="round", fc="w"), ha="right",
+                            arrowprops=dict(arrowstyle="->"))
+        self.annot.set_visible(False)
+        self.highlighter, = self.ax.semilogy(distances.mean(), amps.mean(), "yo", ms=10)
+        self.highlighter.set_visible(False)
+            
+        if self.hypdist_widget.isChecked():
+            stations = [trid.split(".")[1] for trid in trids]
+            zdist = self.current_nll_event.Z + self.locate_run.project.stations.loc[stations,"Elevation"]
+            distances = np.sqrt(distances**2 + zdist**2)
+        
+        self.markers, = self.ax.semilogy(distances, amps, "o", mec="k", mfc="white")
+
+        self.ax.set_xlabel("Distance [km]")
+        self.ax.set_ylabel("Amplitude")
+        self.canvas.draw()
+
+    def init_ui(self):
+
+        self.slct_wa_wdgt = QRadioButton("Wood-Anderson")
+        self.slct_wa_wdgt.setChecked(True)
+        self.slct_rl_wdgt = QRadioButton("Real (Velocity)")
+        self.slct_rw_wdgt = QRadioButton("Raw (Velocity)")
+
+        self.slct_A0_widget = self.create_combobox()
+        self.calc_mag_button = QPushButton("Calculate Magnitude")
+
+        self.plotqm_amps_widget = QCheckBox("Use QM Amplitudes")
+        self.plotqm_amps_widget.setChecked(False)
+
+        self.select_Z_widget = QRadioButton("Use Vertical Component")
+        self.select_H_widget = QRadioButton("Use Horizontal Component")
+        self.select_H_widget.setChecked(True)
+
+        self.combine_hor_widget = QCheckBox("Combine Horizontal Components")
+        self.combine_hor_widget.setChecked(False)
+        self.hypdist_widget = QCheckBox("Use Hypocentral Distance")
+        self.hypdist_widget.setChecked(False)
+
+        self.comp_group = QButtonGroup()
+        self.comp_group.addButton(self.select_Z_widget)
+        self.comp_group.addButton(self.select_H_widget)
+
+        self.selection_group = QButtonGroup()
+        self.selection_group.addButton(self.slct_rl_wdgt)
+        self.selection_group.addButton(self.slct_rw_wdgt)
+        self.selection_group.addButton(self.slct_wa_wdgt)
+
+        # selection group
+        layout1 = QVBoxLayout()
+        layout1.addWidget(self.slct_wa_wdgt)
+        layout1.addWidget(self.slct_rl_wdgt)
+        layout1.addWidget(self.slct_rw_wdgt)
+        groupbox1 = QGroupBox()
+        groupbox1.setCheckable(False)
+        groupbox1.setLayout(layout1)
+
+        # componenbt group
+        layout2 = QVBoxLayout()
+        layout2.addWidget(self.select_Z_widget)
+        layout2.addWidget(self.select_H_widget)
+        groupbox2 = QGroupBox()
+        groupbox2.setCheckable(False)
+        groupbox2.setLayout(layout2)
+
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(groupbox1)
+        left_layout.addWidget(groupbox2)
+        left_layout.addWidget(self.combine_hor_widget)
+        left_layout.addWidget(self.plotqm_amps_widget)
+        left_layout.addWidget(self.hypdist_widget)
+        left_layout.addWidget(self.slct_A0_widget)
+        left_layout.addWidget(self.calc_mag_button)
+        left_layout.addStretch(1)
+
+        right_layout = QVBoxLayout()
+        self.fig, self.ax = plt.subplots(1,1)
+        self.fig.tight_layout()
+        self.canvas = FigureCanvas(self.fig)
+        right_layout.addWidget(self.canvas)
+
+        overall_layout = QHBoxLayout()
+        overall_layout.addLayout(left_layout)
+        overall_layout.addLayout(right_layout, stretch=10)
+        self.setLayout(overall_layout)
+
+    def define_parameters(self):
+        self.current_amplitudes = None
+        self.manual_picks = None
+        self.current_nll_event = None
+        self.A0 = self.locate_run.mag_params["A0"]
+        self.Magnitude = None
+
+        self._default_a0 = ["keir2006","Danakil2017","Greenfield2018_askja",
+                            "Greenfield2018_bardarbunga","Greenfield2018_comb",
+                            "Hutton-Boore","Langston1998","UK"]
+        if not self.A0 in self._default_a0:
+            self.a0_lookup = dict([(i, item) for i,item in enumerate(self._default_a0 + ["Custom","add_new"])])
+        else:
+            self.a0_lookup = dict([(i, item) for i,item in enumerate(self._default_a0 + ["add_new"])])
+        
+        self.amplitude_prefix = "WA"
+    def setup_connections(self):
+        self.calc_mag_button.clicked.connect(self._clicked_calc_mag)
+        self.slct_A0_widget.currentIndexChanged.connect(self._select_a0)
+        self.comp_group.buttonClicked.connect(self._redraw_plots)
+        self.selection_group.buttonClicked.connect(self._redraw_plots)
+        self.combine_hor_widget.clicked.connect(self._redraw_plots)
+        self.hypdist_widget.clicked.connect(self._redraw_plots)
+        self.plotqm_amps_widget.clicked.connect(self._redraw_plots)
+        self.canvas.mpl_connect("motion_notify_event", self._hover)
+    def init_plot(self):
+        pass
+    def _get_distances(self, stations, try_this=[]):
+        distances = []
+        for station in stations:
+            if len(try_this) > 0 and station in try_this.index:
+                distances.append(try_this.loc[station])
+            else:
+                spos = self.locate_run.project.stations.loc[station, ["Xproj","Yproj"]]
+                epos = self.current_nll_event.Xproj, self.current_nll_event.Yproj
+                distances.append(np.sqrt((spos.Xproj-epos[0])**2 + (spos.Yproj-epos[1])**2))
+        return distances
+    def create_combobox(self):
+        combobox = QComboBox()
+        for key in self.a0_lookup.keys():
+            combobox.addItem(self.a0_lookup[key])
+        combobox.setCurrentText(self.A0 if isinstance(self.A0,str) else "Custom")
+        return combobox
+    def _clicked_calc_mag(self):
+        print("Clicked Calculate Magnitude")
+        self.calculate_magnitude()
+    def _select_a0(self, item):
+        print("SELECT A0")
+        if self.a0_lookup[item] == "Custom":
+            self.A0 = self.locate_run.mag_params["A0"]
+        elif self.a0_lookup[item] == "add_new":
+            self._add_new_A0()
+            self.slct_A0_widget.setCurrentText(self.A0 if isinstance(self.A0,str) else "Custom")
+        else:
+            self.A0 = self.a0_lookup[item]
+    def _add_new_A0(self):
+        print("ADDING NEW A0 NOT IMPLEMENTED YET")
+        pass
+    def _redraw_plots(self):
+        self.plot_amplitudes()
+        if isinstance(self.Magnitude, Magnitude):
+            self.calculate_magnitude()
+            self.plot_A0_magnitudes()
+    def _hover(self, event):
+        vis = self.annot.get_visible()
+        if event.inaxes == self.ax:
+            cont, ind = self.markers.contains(event)
+            if cont:
+                self.update_annot(ind)
+                self.annot.set_visible(True)
+                self.highlighter.set_visible(True)
+                self.canvas.draw()
+            else:
+                if vis:
+                    self.annot.set_visible(False)
+                    self.highlighter.set_visible(False)
+                    self.canvas.draw()
+
+    def update_annot(self, ind):
+        x,y = self.markers.get_data()
+        self.highlighter.set_xdata([x[ind["ind"][0]]])
+        self.highlighter.set_ydata([y[ind["ind"][0]]])
+
+        self.annot.xy = (x[ind["ind"][0]], y[ind["ind"][0]])
+        text = "{}".format(" ".join([self.names[n] for n in ind["ind"]]))
+        self.annot.set_text(text)
+        self.annot.get_bbox_patch().set_alpha(0.4)      
 if __name__ == '__main__':
     # app = QApplication([])
     if not QApplication.instance():
