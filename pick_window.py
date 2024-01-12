@@ -39,17 +39,27 @@ class PickWindow(QWidget):
         
         self.project = locate_run.project  
         self.locate_run = locate_run
+        self.NLL = locate_run.project.nll_settings
         self.current_event = event
         self.define_parameters()
-
+        
         self.init_ui()
-
         self.setup_connections()
 
     def define_parameters(self):
+        self.uid = self.current_event.EventID
         ## manual_picks
-        pass
+        self.manual_picks = self.locate_run.get_manual_picks(self.uid, self.locate_run.project.nll_settings.root)
+        self.current_nll_event = self.read_nll_event()
+        self.current_amplitudes = self.locate_run.get_amplitude_picks(self.uid, self.locate_run.project.nll_settings.root)
 
+    def read_nll_event(self):
+        fname = os.path.join(self.NLL.root, "manual_locations", 
+                             f"{self.current_event.EventID}.hyp")
+        if os.path.exists(fname):
+            return self.NLL.read_summed_hypfile(fname)
+        else:
+            return None
     def init_ui(self):   
         layout = QVBoxLayout() 
 
@@ -58,12 +68,13 @@ class PickWindow(QWidget):
         layout.addWidget(self.tab_widget)
 
         # Add tabs to the tab widget
-        self.tab1 = Picking(self.locate_run, self.current_event)
-        self.tab2 = NonLinLoc(self.locate_run, self.current_event)
-        self.tab3 = Wadati(self.locate_run, self.current_event.EventID)
-        self.tab4 = FPS(self.locate_run)
-        self.tab5 = TravelTime(self.locate_run, self.current_event)
-        self.tab6 = MagnitudeWindow(self.locate_run, self.current_event)
+        
+        self.tab1 = Picking(self.locate_run, self.current_event, self.manual_picks, self.current_amplitudes, self.current_nll_event)
+        self.tab2 = NonLinLoc(self.locate_run, self.current_event, self.manual_picks, self.current_nll_event)
+        self.tab3 = Wadati(self.locate_run, self.manual_picks, self.current_nll_event)
+        self.tab4 = FPS(self.locate_run, self.current_nll_event, self.manual_picks)
+        self.tab5 = TravelTime(self.locate_run, self.current_event, self.current_nll_event, self.manual_picks)
+        self.tab6 = MagnitudeWindow(self.locate_run, self.current_event, self.current_nll_event, self.current_amplitudes)
 
         self.tab_widget.addTab(self.tab1, 'Picking')
         self.tab_widget.addTab(self.tab2, 'NonLinLoc')
@@ -72,58 +83,62 @@ class PickWindow(QWidget):
         self.tab_widget.addTab(self.tab5, 'Travel Time')
         self.tab_widget.addTab(self.tab6, "Magntiude")
 
-        # pd.merge(self.tab1.manual_picks, self.tab2.current_nll_event.phases, 
-        #                          left_index=True, right_index=True, how="outer")
-
         self.setLayout(layout)
-
     def tab_bar_clicked(self, index):
         print(index)
-        if index == 3:
-            # Fault Plane Solution
-            if len(self.tab2.current_nll_event.phases) > 0:
-                self.tab4.get_picks(pd.merge(self.tab1.manual_picks, self.tab2.current_nll_event.phases, 
-                                    left_index=True, right_index=True, how="outer"))
         if index == 2: 
             # wadati
-            self.tab3.get_picks(self.tab1.manual_picks)
-            try:
-                self.tab3.read_nonlinloc_event(os.path.join(self.locate_run.project.nll_settings.root, 
-                                                        "manual_locations", f"{self.current_event.EventID}.hyp"))
-            except FileNotFoundError:
-                pass
             self.tab3.init_plot()
-
-        if index == 1:
-            # nonlinloc
-            self.tab2.get_picks(self.tab1.manual_picks)
-            self.tab2.replot("STATIONS")
-
-        if index == 4:
-            # travel time
-            self.tab5.get_manual_picks()
-            if len(self.tab5.manual_picks) > 0:
-                self.tab5.plot_manual_picks()
-                self.tab5.plot_manual_traveltimes()
-        
-        if index == 5:
-            # magnitude
-            print("YES")
-            self.tab6.manual_picks = self.tab1.manual_picks
-            self.tab6.current_amplitudes = self.tab1.current_amplitudes
-            self.tab6.current_nll_event = self.tab2.current_nll_event
-            if len(self.tab6.current_amplitudes) > 0:
-                self.tab6.plot_amplitudes()
 
     def setup_connections(self):
         self.tab_widget.tabBarClicked.connect(self.tab_bar_clicked)
 
-class Picking(QWidget):    
+        # Picking connections
+        self.tab1.maxamplitude_widget.clicked.connect(self._update_current_amplitudes)
+        self.tab1.savepicks_widget.clicked.connect(self._save_picks)
+        self.tab1.manual_pick_signal.connect(self._update_manual_picks)
+        self.tab1.relocate_widget.clicked.connect(self.tab2.relocate_event_button.clicked.emit)
+        self.tab1.calcmag_widget.clicked.connect(self.tab6.calc_mag_button.clicked.emit)
+
+        # nonlinloc connections
+        self.tab2.relocate_event_button.clicked.connect(self._update_current_nll_event)
     
-    def __init__(self, locate_run, event):
+    def _save_picks(self):
+        print("SAVING PICKS", self.manual_picks)
+        self.locate_run.save_manual_picks(self.uid, self.manual_picks, self.locate_run.project.nll_settings.root)
+        if len(self.current_amplitudes) > 0:
+            self.locate_run.save_amplitude_picks(self.uid, self.current_amplitudes, self.locate_run.project.nll_settings.root)
+        # self.
+
+    def _update_current_amplitudes(self):
+        self.current_amplitudes = self.tab1.current_amplitudes
+        self.tab6.current_amplitudes = self.current_amplitudes
+        self.tab6.amp_update_signal.emit()
+    def _update_manual_picks(self):
+        self.manual_picks = self.tab1.manual_picks
+        self.tab2.manual_picks = self.manual_picks
+        self.tab3.manual_picks = self.manual_picks
+        self.tab4.manual_picks = self.manual_picks
+        self.tab5.manual_picks = self.manual_picks
+        self.tab4.pick_update_signal.emit()
+    def _update_current_nll_event(self):
+        self.current_nll_event = self.tab2.current_nll_event
+        self.tab1.current_nll_event = self.current_nll_event
+        self.tab3.current_nll_event = self.current_nll_event
+        self.tab4.current_nll_event = self.current_nll_event
+        self.tab5.current_nll_event = self.current_nll_event
+        self.tab6.current_nll_event = self.current_nll_event
+        self.tab4.pick_update_signal.emit()
+        
+class Picking(QWidget):    
+    manual_pick_signal = QtCore.Signal(name="manual_pick_updated")
+    def __init__(self, locate_run, event, manual_picks, amplitudes, current_nll_event):
         super().__init__()
         self.locate_run = locate_run
         self.current_event = event
+        self.manual_picks = manual_picks
+        self.current_amplitudes = amplitudes
+        self.current_nll_event = current_nll_event
         self.define_parameters()
         self.init_ui()
         self.setup_connections()
@@ -138,50 +153,65 @@ class Picking(QWidget):
         if not self.wa_waveforms:
             self.wa_waveforms = Stream(self.waveform_data.get_wa_waveform(tr) for tr in self.waveform_data.raw_waveforms)
 
+        # Initialise amplitudes DataFrame
+        amp_cols = ["epi_dist","z_dist","P_amp","P_freq","P_time","P_avg_amp","P_filter_gain",
+                     "S_amp","S_freq","S_time","S_avg_amp","S_filter_gain","Noise_amp","is_picked"]
+        self.current_amplitudes = pd.DataFrame([], columns=amp_cols)
+        # Columns: tr_id, epicentral distance, vertical distance, P_amp,
+        #          P_freq, P_time, P_noise_ratio, S_amp, S_freq, S_time,
+        #          S_noise_ratio, Noise_amp, picked
+        template = ["",np.nan,np.nan,np.nan,np.nan,np.nan,
+                    np.nan,np.nan,np.nan,np.nan,np.nan,np.nan,
+                    np.nan,np.nan,False]
         
-        for prefix, stream in zip(["Raw", "Real", "WA"], 
-                                  [self.waveform_data.raw_waveforms, self.real_waveforms, self.wa_waveforms]):
-            cols = ["Network", "Station", "Location", "Channel", "Component", "StreamID",
-                    prefix+"Amplitude", prefix+"Time", prefix+"Period", "QMFlag"]
+        before = self.locate_run.amplitude.bandpass_filter
+        if self.filter.type:
+            self.locate_run.amplitude.bandpass_filter = True
+        for prefix, stream in zip(["Real", "WA"], 
+                                  [self.real_waveforms, self.wa_waveforms]):
             stream = preprocess_stream(stream.copy(), self.filter, self.taper, self.detrend)
             for tr in stream:
                 # check for manual pick
-                if (tr.stats.station, "P") in self.manual_picks.index:
-                    ptraveltime = time_offset(self.manual_picks.loc[(tr.stats.station, "P"), "PickTime"],
-                                              self.current_event.DT)
-                    qmflag = False
-                elif (tr.stats.station, "S") in self.manual_picks.index:
-                    ptraveltime = time_offset(self.manual_picks.loc[(tr.stats.station, "S"), "PickTime"],
-                                              self.current_event.DT) / 1.73
-                    qmflag = False
-                elif (tr.stats.station, "P") in self.qm_picks.index:
-                    ptraveltime = time_offset(self.qm_picks.loc[(tr.stats.station, "P"), "ModelledTime"].tz_convert(None),
-                                              self.current_event.DT)
-                    qmflag = True
-                elif (tr.stats.station, "S") in self.qm_picks.index:
-                    ptraveltime = time_offset(self.qm_picks.loc[(tr.stats.station, "S"), "ModelledTime"].tz_convert(None),
-                                              self.current_event.DT) / 1.73
-                    qmflag = True
-                else:
-                    continue
-                
-                window = ptraveltime-1, ptraveltime+10
-                tarray = tr.times(reftime=UTCDateTime(self.current_event.DT))
-                mask = (tarray>window[0]) & (tarray<window[1])
-
-                if np.sum(mask) == 0:
+                ppick, ptt, spick, stt, qmflag = self.locate_run.amplitude._get_picks(tr.stats.station, self.manual_picks, 
+                                                                              self.qm_picks, self.current_nll_event,
+                                                                              self.current_event.DT)
+                if not ppick:
                     continue
 
-                maxamplitude = np.max(np.abs(tr.data[mask]))
-                mgrid = np.mgrid[:len(tr)][mask]
-                maxamp_time = self.current_event.DT + pd.to_timedelta(tarray[mgrid[np.argmax(np.abs(tr.data[mask]))]], "S")
+                filter_sos = self.filter.as_sos(tr.stats.sampling_rate)
+                windows = self.locate_run.amplitude._get_amplitude_windows(ppick,ptt,spick,stt, 
+                                                                           self.locate_run.project.LUT.fraction_tt)
+                amps = self.locate_run.amplitude._measure_signal_amps(
+                    template.copy(), tr, windows, self.locate_run.amplitude.noise_measure, filter_sos
+                    )
+                self.current_amplitudes.loc[tr.id+"."+prefix, amp_cols] = amps[1:]
+                self.current_amplitudes.loc[tr.id+"."+prefix, "Noise_amp"] = self.locate_run.amplitude._measure_noise_amp(tr, windows, self.locate_run.amplitude.noise_measure)
 
+                self.current_amplitudes.loc[tr.id+"."+prefix, "is_picked"] = not qmflag
+                self.current_amplitudes.loc[tr.id+"."+prefix, ["epi_dist", "z_dist"]] = self._get_distances(tr.id)
                 
-                self.current_amplitudes.loc[(tr.stats.station, tr.stats.component), cols] = [tr.stats.network, tr.stats.station, 
-                                                                                             tr.stats.location, tr.stats.channel,
-                                                                                             tr.stats.component, tr.id,
-                                                                                             maxamplitude, maxamp_time, None, qmflag]
-        self.current_amplitudes.loc[:,"Filter"] = self.filter.as_dict()
+        # self.current_self.current_amplitudes.loc[:,"Filter"] = self.filter.as_dict()
+        self.current_amplitudes["filter"] = str(self.filter.as_dict())
+        self.current_amplitudes.index.name = "traceID"
+        # print(self.current_amplitudes)
+        self.locate_run.amplitude.bandpass_filter = before
+
+    def _get_distances(self, traceid):
+        network, station, location, channel = traceid.split(".")
+        station_locX = self.locate_run.project.stations.loc[station, "Xproj"]
+        station_locY = self.locate_run.project.stations.loc[station, "Yproj"]
+        station_locZ = self.locate_run.project.stations.loc[station, "Elevation"]
+
+        if isinstance(self.current_nll_event, NonLinLocEvent):
+            ev_locX = self.current_nll_event.Xproj
+            ev_locY = self.current_nll_event.Yproj
+            ev_locZ = self.current_nll_event.Zproj
+        else:
+            ev_locX = self.current_event.Xproj
+            ev_locY = self.current_event.Yproj
+            ev_locZ = self.current_event.Zproj
+
+        return np.sqrt((station_locX-ev_locX)**2 + (station_locY-ev_locY)**2), ev_locZ-station_locZ
 
     def plot_amplitude(self):
         if self.removeresponse_widget.isChecked() and self.velocity_button.isChecked():
@@ -190,6 +220,7 @@ class Picking(QWidget):
             prefix = "WA"
         else:
             prefix = "Raw"
+            return
 
         for line in self.amplines:
             try:
@@ -197,14 +228,20 @@ class Picking(QWidget):
             except ValueError:
                 continue
 
+        amp_feature = self.locate_run.mag_params["amp_feature"]
         for ax, comp in zip(self.axes, "ZNE"):
-            if (self.current_station, comp) not in self.current_amplitudes.index:
+            if not (self.current_station,comp) in self.waveform_lookup.index:
                 continue
-            amp = self.current_amplitudes.loc[(self.current_station, comp), prefix+"Amplitude"]
+            traceid = self.waveform_lookup.loc[(self.current_station,comp),"traceID"]
+            if traceid+"."+prefix not in self.current_amplitudes.index:
+                # print("skip", traceid+"."+prefix)
+                continue
+            amp = self.current_amplitudes.loc[traceid+"."+prefix, amp_feature] / 1e3
             if pd.isna(amp):
+                # print("skip", traceid+"."+prefix, amp)
                 continue
             self.amplines.append(ax.axhline(amp, lw="0.5", ls=":", c="purple"))
-            amptime = self.current_amplitudes.loc[(self.current_station, comp), prefix+"Time"]
+            amptime = pd.to_datetime(self.current_amplitudes.loc[traceid+"."+prefix, amp_feature[0]+"_time"].datetime)
             print(amptime, self.current_event.DT)
             try:
                 amptime = time_offset(amptime, self.current_event.DT)
@@ -363,7 +400,8 @@ class Picking(QWidget):
                                              "component" : [tr.stats.component for tr in self.waveform_data.raw_waveforms],
                                              "starttime" : [tr.stats.starttime for tr in self.waveform_data.raw_waveforms],
                                              "endtime" : [tr.stats.endtime for tr in self.waveform_data.raw_waveforms],
-                                             "sampling_rate" : [tr.stats.sampling_rate for tr in self.waveform_data.raw_waveforms]})
+                                             "sampling_rate" : [tr.stats.sampling_rate for tr in self.waveform_data.raw_waveforms],
+                                             "traceID" : [tr.id for tr in self.waveform_data.raw_waveforms]})
         self.waveform_lookup.set_index(["station", "component"], inplace=True)
         self.waveform_lookup.sort_index(inplace=True)
         self.waveform_lookup = self.waveform_lookup.loc[~self.waveform_lookup.index.duplicated(),:]
@@ -393,7 +431,6 @@ class Picking(QWidget):
     def define_parameters(self):
         self.uid = self.current_event.EventID
         ## manual_picks
-        self.manual_picks = self.locate_run.get_manual_picks(self.uid, self.locate_run.project.nll_settings.root)
         self.qm_picks = self.locate_run.get_picks(self.uid)
         self.qm_picks = self.add_hyp_distance_to_picks(self.qm_picks)
         self.current_stations = np.array(list(set(self.qm_picks.index.get_level_values(0).to_list())))
@@ -413,9 +450,6 @@ class Picking(QWidget):
 
         self.current_station = None
 
-        # amplitude picking
-        self.current_amplitudes = self.locate_run.get_amplitude_picks(self.uid, self.locate_run.project.nll_settings.root)
-
         ## plotting
         self.xlim = None
         self.ylim = None
@@ -427,7 +461,6 @@ class Picking(QWidget):
         self.selected_phase = None # key button press for selecting P or S phase. If None base choice on which axes
         self.current_phase = None
         self.current_pick = None
-
 
         self._use_qm_waveforms = True
 
@@ -453,6 +486,8 @@ class Picking(QWidget):
         self.maxamplitude_widget = QPushButton("Get Max Amplitude")
         self.loadwaveforms_widget = QPushButton("Load Waveforms")
         self.savepicks_widget = QPushButton("Save Picks")
+        self.relocate_widget = QPushButton("Relocate Event")
+        self.calcmag_widget = QPushButton("Calculate Magnitude")
 
         ## CLIENT TO USE - RADIO BUTTONS
         # radio button widget
@@ -503,6 +538,8 @@ class Picking(QWidget):
         left_layout.addWidget(self.qmwaveforms_widget)
         left_layout.addWidget(self.loadwaveforms_widget)
         left_layout.addWidget(self.maxamplitude_widget)
+        left_layout.addWidget(self.relocate_widget)
+        left_layout.addWidget(self.calcmag_widget)
         left_layout.addWidget(self.removeresponse_widget)
 
         line_layout = QHBoxLayout()
@@ -537,7 +574,7 @@ class Picking(QWidget):
         
     def setup_connections(self):
         self.loadwaveforms_widget.clicked.connect(self._clicked_load_waveforms)
-        self.savepicks_widget.clicked.connect(self.save_picks)
+        # self.savepicks_widget.clicked.connect(self.save_picks)
         self.highpass_widget.editingFinished.connect(self._set_highpass_filter)
         self.lowpass_widget.editingFinished.connect(self._set_lowpass_filter)
         self.corners_widget.editingFinished.connect(self._set_corners)
@@ -547,6 +584,8 @@ class Picking(QWidget):
         self.maxpercentage_widget.editingFinished.connect(self._set_maxpercentage)
         self.station_list_widget.itemClicked.connect(self._set_current_station)
         self.maxamplitude_widget.clicked.connect(self._clicked_maxamplitude)
+        self.relocate_widget.clicked.connect(self._clicked_relocate)
+        self.calcmag_widget.clicked.connect(self._clicked_calcmag)
 
         self.removeresponse_widget.toggled.connect(self._remove_response_toggled)
         # self.velocity_button.toggled.connect(self._remove_response2)
@@ -650,6 +689,7 @@ class Picking(QWidget):
         # print(self.manual_picks)
     
         self.draw_current_pick()
+        self.manual_pick_signal.emit()
 
     def deselect_pick(self):
         self.current_pick = None
@@ -842,6 +882,11 @@ class Picking(QWidget):
     def _clicked_maxamplitude(self):
         self._pick_amplitude()
         self.plot_amplitude()
+    def _clicked_relocate(self):
+        print("RELOCATE_EVENT")
+    def _clicked_calcmag(self):
+        if len(self.current_amplitudes) > 0:
+            print("VALVULATE MAGNITUDE")
     def on_mouse_click(self, event):
         print("mouse click", type(event), event)
         if not event.inaxes:
@@ -919,12 +964,6 @@ class Picking(QWidget):
     def on_enter_axes(self, event):
         self.canvas.setFocus()
         return
-    def save_picks(self):
-        print("SAVING PICKS", self.manual_picks)
-        self.locate_run.save_manual_picks(self.uid, self.manual_picks, self.locate_run.project.nll_settings.root)
-        if len(self.current_amplitudes) > 0 and not np.all(pd.isna(self.current_amplitudes.RawAmplitude)):
-            self.locate_run.save_amplitude_picks(self.uid, self.current_amplitudes, self.locate_run.project.nll_settings.root)
-        # self.
     def load_list_of_stations(self, stations):
         self.station_list_widget.clear()
         self.list_of_stations = [QListWidgetItem(s, self.station_list_widget) for s in stations]
@@ -1045,11 +1084,12 @@ class Picking(QWidget):
         self.station_list_widget.scrollToItem(self.list_of_stations[tmp[mask][0]])
 
 class NonLinLoc(QWidget):    
-    
-    def __init__(self, locate_run, event):
+    def __init__(self, locate_run, current_event, manual_picks, current_nll_event):
         super().__init__()
         self.locate_run = locate_run
-        self.current_event = event
+        self.current_event = current_event
+        self.manual_picks = manual_picks
+        self.current_nll_event = current_nll_event
         self.NLL = self.locate_run.project.nll_settings
         
         self.define_parameters()
@@ -1057,15 +1097,7 @@ class NonLinLoc(QWidget):
         self.init_plot()
         self.setup_connections()
 
-        if os.path.exists(
-                os.path.join(
-                    self.NLL.root, "manual_locations", f"{self.current_event.EventID}.hyp"
-                    )):
-            self.current_nll_event = self.NLL.read_summed_hypfile(
-                os.path.join(
-                    self.NLL.root, "manual_locations", f"{self.current_event.EventID}.hyp"
-                        )
-                    )
+        if isinstance(self.current_nll_event, NonLinLocEvent):
             # self.replot("STATIONS")
             self.plot_nllloc()
             self.residual_ax.clear()
@@ -1261,22 +1293,6 @@ class NonLinLoc(QWidget):
 
         self.colour_by_phase = True
         self.colour_by_residual = True
-        self.manual_picks = pd.DataFrame([])
-
-        # self.current_nll_event = self.NLL.read_summed_hypfile(
-        #     os.path.join(
-        #         self.NLL.root, "manual_locations", f"{self.current_event.EventID}.hyp"
-        #             )
-        #         )
-        
-        # # self.replot("STATIONS")
-        # self.plot_nllloc()
-        # self.residual_ax.clear()
-        # self.weight_ax.clear()
-        # self.plot_residuals()
-        # self.canvas.draw()
-
-        self.current_nll_event = NonLinLocEvent()
 
     def get_picks(self, picks):
         self.manual_picks = picks
@@ -1424,6 +1440,8 @@ class NonLinLoc(QWidget):
         # self.use_Sphases_widget.toggled.connect(self._set_use_phase)
         self.phaseselection_widget.idClicked.connect(self._set_use_phase)
     def relocate_event(self):
+        if len(self.manual_picks) == 0:
+            return
         print("RELOCATE EVENT")
         print(self.manual_picks)
         print(self.current_event)
@@ -1450,7 +1468,6 @@ class NonLinLoc(QWidget):
         self.weight_ax.clear()
         self.plot_residuals()
         self.canvas.draw()
-
 
     def _set_show_stations(self):
         print("SHOW STATIONS")
@@ -1479,31 +1496,40 @@ class NonLinLoc(QWidget):
             raise ValueError("HOW HAS THIS HAPPENED")
 
 class FPS(QWidget):
-    def __init__(self, locate_run):
+    pick_update_signal = QtCore.Signal()
+    def __init__(self, locate_run, current_nll_event, manual_picks):
         super().__init__()
         self.locate_run = locate_run
+        self.current_nll_event = current_nll_event
+        self.manual_picks = manual_picks
+
+        self.merge_picks()
         
         self.define_parameters()
         self.init_ui()
         self.init_plot()
         self.setup_connections()
 
+        if len(self.picks) > 0:
+            self.plot_stations()
+            self.canvas.draw()
+
     def plot_stations(self):
         print("plotting stations")
-        mask = (self.manual_picks.Polarity > 0) & ~self.manual_picks.upper_hemisphere & (self.manual_picks.weight > 0)
-        self.ax.line(self.manual_picks.plunge[mask], self.manual_picks.bearing[mask], "r^")
-        mask = (self.manual_picks.Polarity > 0) & self.manual_picks.upper_hemisphere & (self.manual_picks.weight > 0)
-        self.ax.line(self.manual_picks.plunge[mask], self.manual_picks.bearing[mask], "^", mec="r", mfc="white")
+        mask = (self.picks.Polarity > 0) & ~self.picks.upper_hemisphere & (self.picks.weight > 0)
+        self.ax.line(self.picks.plunge[mask], self.picks.bearing[mask], "r^")
+        mask = (self.picks.Polarity > 0) & self.picks.upper_hemisphere & (self.picks.weight > 0)
+        self.ax.line(self.picks.plunge[mask], self.picks.bearing[mask], "^", mec="r", mfc="white")
 
-        mask = (self.manual_picks.Polarity < 0) & ~self.manual_picks.upper_hemisphere & (self.manual_picks.weight > 0)
-        self.ax.line(self.manual_picks.plunge[mask], self.manual_picks.bearing[mask], "bv")
-        mask = (self.manual_picks.Polarity < 0) & self.manual_picks.upper_hemisphere & (self.manual_picks.weight > 0)
-        self.ax.line(self.manual_picks.plunge[mask], self.manual_picks.bearing[mask], "v", mec="b", mfc="white")
+        mask = (self.picks.Polarity < 0) & ~self.picks.upper_hemisphere & (self.picks.weight > 0)
+        self.ax.line(self.picks.plunge[mask], self.picks.bearing[mask], "bv")
+        mask = (self.picks.Polarity < 0) & self.picks.upper_hemisphere & (self.picks.weight > 0)
+        self.ax.line(self.picks.plunge[mask], self.picks.bearing[mask], "v", mec="b", mfc="white")
 
-        mask = (self.manual_picks.Polarity == 0) | (self.manual_picks.weight == 0)
-        self.ax.line(self.manual_picks.plunge[mask], self.manual_picks.bearing[mask], "o", mfc="white", mec="black")
+        mask = (self.picks.Polarity == 0) | (self.picks.weight == 0)
+        self.ax.line(self.picks.plunge[mask], self.picks.bearing[mask], "o", mfc="white", mec="black")
 
-        for index, row in self.manual_picks.iterrows():
+        for index, row in self.picks.iterrows():
             lon, lat = mplstereonet.stereonet_math.line(row.plunge, row.bearing)
             self.ax.text(lon, lat, index[0])
 
@@ -1525,43 +1551,42 @@ class FPS(QWidget):
 
     def add_plunge_bearing(self):
         # calculate plunge/bearing for plotting 
-        self.manual_picks["plunge"] = 90 - self.manual_picks.receiver_takeoffangle
-        self.manual_picks["bearing"] = self.manual_picks.station_azimuth
-        self.manual_picks["upper_hemisphere"] = False
+        self.picks["plunge"] = 90 - self.picks.receiver_takeoffangle
+        self.picks["bearing"] = self.picks.station_azimuth
+        self.picks["upper_hemisphere"] = False
         # where the plunge is negative, correct
-        mask = self.manual_picks.plunge<0
-        self.manual_picks.loc[mask,"plunge"] = self.manual_picks.loc[mask,"plunge"].apply(np.abs)
-        self.manual_picks.loc[mask,"bearing"] = (self.manual_picks.loc[mask,"bearing"] + 180)%360
-        self.manual_picks.loc[mask,"upper_hemisphere"] = True
+        mask = self.picks.plunge<0
+        self.picks.loc[mask,"plunge"] = self.picks.loc[mask,"plunge"].apply(np.abs)
+        self.picks.loc[mask,"bearing"] = (self.picks.loc[mask,"bearing"] + 180)%360
+        self.picks.loc[mask,"upper_hemisphere"] = True
 
     def add_weight(self):
         # this section sets the weight based on the picks
         qual2weight = {0:0, 1:0.2, 2:0.4, 3:0.5, 4:1}
-        self.manual_picks["weight"] = self.manual_picks.loc[:,"Quality"].apply(lambda key: qual2weight.get(key, None))
-        mask1 = self.manual_picks["weight"] < 0.001
-        mask2 = self.manual_picks["weight"] >= 0.5
+        self.picks["weight"] = self.picks.loc[:,"Quality"].apply(lambda key: qual2weight.get(key, None))
+        mask1 = self.picks["weight"] < 0.001
+        mask2 = self.picks["weight"] >= 0.5
         mask3 = ~mask1 & ~mask2
-        self.manual_picks.loc[mask1, "weight"] = 29.6386
-        self.manual_picks.loc[mask2, "weight"] = 0.
-        self.manual_picks.loc[mask3, "weight"] = 1 / (self.manual_picks.loc[mask3,"weight"] - self.manual_picks.loc[mask3,"weight"]**2) - 2
-        print("AVERAGE WEIGHT", (1./len(self.manual_picks)) * np.sum(self.manual_picks.weight), "30 = all best picks, 0 = rubbish") 
+        self.picks.loc[mask1, "weight"] = 29.6386
+        self.picks.loc[mask2, "weight"] = 0.
+        self.picks.loc[mask3, "weight"] = 1 / (self.picks.loc[mask3,"weight"] - self.picks.loc[mask3,"weight"]**2) - 2
+        print("AVERAGE WEIGHT", (1./len(self.picks)) * np.sum(self.picks.weight), "30 = all best picks, 0 = rubbish") 
 
     def convert_polarity_to_number(self):
         dic = {"U":1, "D":-1, np.nan:0, None:0, "u":1, "d":-1, "+":1, "-":-1}
-        self.manual_picks.loc[:,"Polarity"] = self.manual_picks.loc[:,"Polarity"].apply(lambda key: dic.get(key, 0))
+        self.picks.loc[:,"Polarity"] = self.picks.loc[:,"Polarity"].apply(lambda key: dic.get(key, 0))
 
-    def get_picks(self, picks):
+    def merge_picks(self):
         # only get Ppicks
-        mask = picks.index.get_level_values(1) == "P"
-        picks = picks.loc[mask,:]
-        self.manual_picks = picks
+        print(self.current_nll_event)
+        self.picks = pd.merge(self.manual_picks, self.current_nll_event.phases, 
+                                    left_index=True, right_index=True, how="outer")
+        mask = self.picks.index.get_level_values(1) == "P"
+        self.picks = self.picks.loc[mask,:]
+    
         self.add_plunge_bearing()
         self.add_weight()
         self.convert_polarity_to_number()
-
-        if len(self.manual_picks) > 0:
-            self.plot_stations()
-            self.canvas.draw()
 
     def get_radiation_pattern(self, solution):
         # get the predicted radiation amplitude
@@ -1589,7 +1614,7 @@ class FPS(QWidget):
             return "C"
         
     def run_grid_search(self):
-        sol, sol_range, sol_misfit = fp_grid_search(self.manual_picks, 
+        sol, sol_range, sol_misfit = fp_grid_search(self.picks, 
                                                     dstrike=self.dstrike, 
                                                     ddip=self.ddip, 
                                                     drake=self.drake,
@@ -1597,7 +1622,6 @@ class FPS(QWidget):
         return sol, sol_range, sol_misfit
     
     def define_parameters(self):
-        self.manual_picks = pd.DataFrame([])
 
         self.dstrike = 2
         self.ddip = 2
@@ -1640,7 +1664,7 @@ class FPS(QWidget):
         self.setLayout(overall_layout)
 
     def init_plot(self):
-        if len(self.manual_picks) > 0:
+        if len(self.picks) > 0:
             self.plot_stations()
         self.canvas.draw()
     def setup_connections(self):
@@ -1648,6 +1672,7 @@ class FPS(QWidget):
         self.plot_PT_error_widget.clicked.connect(self._set_plot_PT_error)
         self.plot_solution_range_widget.clicked.connect(self._set_plot_solution_range)
         self.plot_PT_widget.clicked.connect(self._set_plot_PT)
+        self.pick_update_signal.connect(self.update_pick)
     def _run_fps(self):
         self.solution, self.solution_range, self.misfit = self.run_grid_search()
         self.ax.clear()
@@ -1672,12 +1697,19 @@ class FPS(QWidget):
         self.plot_stations()
         self.plot_solution()
         self.canvas.draw()
+    def update_pick(self):
+        self.merge_picks()
+        self.ax.clear()
+        if len(self.picks) > 0:
+            self.plot_stations()
+            self.canvas.draw()
 
 class Wadati(QWidget):
-    def __init__(self, locate_run, uid):
+    def __init__(self, locate_run, manual_picks, current_nll_event):
         super().__init__()
         self.locate_run = locate_run
-        self.uid = uid
+        self.manual_picks = manual_picks
+        self.current_nll_event = current_nll_event
         
         self.define_parameters()
         self.init_ui()
@@ -1685,23 +1717,11 @@ class Wadati(QWidget):
         self.setup_connections()
 
     def get_picks(self, picks):
-        self.manual_picks = picks
+        # self.manual_picks = picks
+        pass
 
     def define_parameters(self):
-
-        nll = self.locate_run.project.nll_settings
-        
-        try:
-            self.manual_picks = self.locate_run.get_manual_picks(self.uid, nll.root)
-        except FileNotFoundError:
-            self.manual_picks = pd.DataFrame([])
-
-        # read nonlinloc hypfile
-        nll_hypfile = os.path.join(nll.root, "manual_locations", f"{self.uid}.hyp")
-        if os.path.exists(nll_hypfile):
-            self.read_nonlinloc_event(nll_hypfile)
-        else:
-            self.current_nll_event = NonLinLocEvent()
+        pass
 
     def init_ui(self):
         self.fig = plt.figure()
@@ -1716,68 +1736,59 @@ class Wadati(QWidget):
 
     def init_plot(self):
         
-        if len(self.current_nll_event.phases) > 0:
+        print(self.manual_picks)
+        if len(self.manual_picks) > 0 and isinstance(self.current_nll_event, NonLinLocEvent):
             self.ax.clear()
-            self.plot_wadati()
+            self.plot_wadati("nonlinloc")
+            self.ax.set_xlabel("P-wave travel time [s]")
+            self.ax.set_xlim(left=0)
+        elif len(self.manual_picks) > 0:
+            self.ax.clear()
+            self.plot_wadati("raw_ptime")
+            self.ax.set_xlabel("P-wave wrt reftime [s]")
+            self.ax.set_xlim(left=-1)
+
 
         self.annot = self.ax.annotate("", xy=(0,0), xytext=(-20,20),textcoords="offset points",
                             bbox=dict(boxstyle="round", fc="w"), ha="right",
                             arrowprops=dict(arrowstyle="->"))
         self.annot.set_visible(False)
 
-        self.ax.set_xlabel("P-wave travel time [s]")
         self.ax.set_ylabel("S-P time [s]")
-        self.ax.set_xlim(left=0)
         self.ax.set_ylim(bottom=0)
         self.canvas.draw()
-
-    def read_nonlinloc_event(self, fname):
-        nll = self.locate_run.project.nll_settings
-        self.current_nll_event = nll.read_summed_hypfile(fname)
         
-    def plot_wadati(self):
-        # residual = observed - predicted
-        phases = pd.merge(self.manual_picks, self.current_nll_event.phases, left_index=True, right_index=True, how="outer")
-        x, y, xerr, yerr = self.get_traveltimes(phases)
-
+    def plot_wadati(self, option):
+        if option == "nonlinloc":
+            # residual = observed - predicted
+            phases = pd.merge(self.manual_picks, self.current_nll_event.phases, left_index=True, right_index=True, how="outer")
+            x, y, xerr, yerr = self.get_traveltimes(phases)
+        elif option == "raw_ptime":
+            x, y, xerr, yerr = self.get_traveltimes(self.manual_picks)
+            x = (x - pd.to_datetime(x.min())).dt.total_seconds()
+        self.stations = x.index.get_level_values(0)
         self.markers, self.caplines, self.barlinecols = self.ax.errorbar(x, y, xerr=xerr, yerr=yerr, ls="none", marker="o", mec="k", mfc="red")
-        self.highlighter, = self.ax.plot(x[0], y[0], "yo", ms=10)
+        self.highlighter, = self.ax.plot(x.iloc[0], y.iloc[0], "yo", ms=10)
         self.highlighter.set_visible(False)
 
     def get_traveltimes(self, phases):
-        traveltime = phases.TTpred + phases.Residual
-        error = phases.Quality.apply(lambda key: self.locate_run.project.nll_settings.nll_locqual2err.get(key, 9999))
-
-        self.stations = list(set(traveltime.index.get_level_values(0)))
-
-        ptimes, sptimes, perrs, sperrs = [], [], [], []
-        for station in self.stations:
-            picks = phases.loc[station,:]
-            if not len(picks) == 2:
-                continue
-            perr, sperr = self.get_errors(error.loc[station])
-            
-            ptimes.append(traveltime.loc[(station, "P")])
-            sptimes.append(traveltime.loc[(station, "S")] - traveltime.loc[(station, "P")])
-
-            perrs.append(perr)
-            sperrs.append(sperr)
+        if "TTpred" in phases.columns:
+            traveltime = phases.TTpred + phases.Residual
+            error = phases.Quality.apply(lambda key: self.locate_run.project.nll_settings.nll_locqual2err.get(key, 9999))
+            sptimes = traveltime.groupby(level=0).diff().dropna()
+            sperr = error.groupby(level=0).sum().dropna().loc[sptimes.index.get_level_values(0)]
+            ptimes = traveltime.loc[[(sta,"P") for sta,_ in sptimes.index]]
+            perr = error.loc[[(sta,"P") for sta,_ in sptimes.index]]
+        else:
+            traveltime = phases.PickTime
+            error = phases.Quality.apply(lambda key: self.locate_run.project.nll_settings.nll_locqual2err.get(key, 9999))
+            sptimes = traveltime.groupby(level=0).diff().dropna().dt.total_seconds()
+            sperr = error.groupby(level=0).sum().dropna().loc[sptimes.index.get_level_values(0)]
+            ptimes = traveltime.loc[[(sta,"P") for sta,_ in sptimes.index]]
+            perr = error.loc[[(sta,"P") for sta,_ in sptimes.index]]
         
         return ptimes, sptimes, perr, sperr
 
-    def get_errors(self, err):
-        p_error = err.loc["P"]
-        s_error = err.loc["S"]
-        if p_error > 10:
-            p_error = None
-        if s_error > 10:
-            s_error = None
-            
-        if p_error and s_error:
-            sp_error = p_error+s_error
-        else:
-            sp_error = None
-        return p_error, sp_error
     def setup_connections(self):
 
         self.canvas.mpl_connect("motion_notify_event", self._hover)
@@ -1809,11 +1820,13 @@ class Wadati(QWidget):
 
 class TravelTime(QWidget):
 
-    def __init__(self, locate_run, event):
+    def __init__(self, locate_run, current_event, current_nll_event, manual_picks):
         super().__init__()
         self.locate_run = locate_run
-        self.current_event = event
-        self.uid = self.current_event.EventID
+        self.current_event = current_event
+        self.qm_picks = self.locate_run.get_picks(self.current_event.EventID)
+        self.current_nll_event = current_nll_event
+        self.manual_picks = manual_picks
         
         nll = self.locate_run.project.nll_settings
         stations = self.locate_run.project.stations
@@ -1925,21 +1938,6 @@ class TravelTime(QWidget):
 
         self._set_vis_manpk()
 
-    def get_manual_picks(self):
-        nll = self.locate_run.project.nll_settings
-        
-        try:
-            self.manual_picks = self.locate_run.get_manual_picks(self.uid, nll.root)
-        except FileNotFoundError:
-            self.manual_picks = pd.DataFrame([])
-
-        # read nonlinloc hypfile
-        nll_hypfile = os.path.join(nll.root, "manual_locations", f"{self.current_event.EventID}.hyp")
-        if os.path.exists(nll_hypfile):
-            self.read_nonlinloc_event(nll_hypfile)
-        else:
-            self.current_nll_event = NonLinLocEvent()
-
     def get_travel_times(self, dmax, z):
         traveltimes = self.lut[0]
         _nx, ny, nz = self.lut[1]
@@ -1963,12 +1961,9 @@ class TravelTime(QWidget):
 
     def define_parameters(self):
 
-        self.qm_picks = self.locate_run.get_picks(self.uid)
         self.qm_picks = self.add_epi_distance_to_picks(self.qm_picks)
 
         self.vpvs = 1.76
-
-        self.get_manual_picks()
 
         self.mantt_lines = []
         self.manpk_lines = []
@@ -2039,10 +2034,6 @@ class TravelTime(QWidget):
         self.ax.set_xlim(left=0)
         self.ax.set_ylim(bottom=0)
         self.canvas.draw()
-
-    def read_nonlinloc_event(self, fname):
-        nll = self.locate_run.project.nll_settings
-        self.current_nll_event = nll.read_summed_hypfile(fname)
         
     def setup_connections(self):
 
@@ -2109,11 +2100,14 @@ class TravelTime(QWidget):
         self.annot.get_bbox_patch().set_alpha(0.4)  
 
 class MagnitudeWindow(QWidget):
-    def __init__(self, locate_run, event):
+    amp_update_signal = QtCore.Signal()
+    def __init__(self, locate_run, current_event, current_nll_event, current_amplitudes):
         super().__init__()
 
         self.locate_run = locate_run
-        self.current_event = event
+        self.current_event = current_event
+        self.current_nll_event = current_nll_event
+        self.current_amplitudes = current_amplitudes
         self.uid = self.current_event.EventID
 
         self.define_parameters()
@@ -2124,29 +2118,32 @@ class MagnitudeWindow(QWidget):
     def calculate_magnitude(self):
         self.Magnitude = Magnitude({"A0":self.A0})
         self.Magnitude.use_hyp_dist = self.hypdist_widget.isChecked()
-        self.Magnitude.noise_filter = 0.0
+        # self.Magnitude.noise_filter = 0.0
 
-        amps, ids = self.get_amplitudes(self.amplitude_prefix)
-        dists = self.get_distances(amps)
-        self.QM_current_amplitudes = self.locate_run.reformat_amplitudes(amps, dists, ids, self.current_nll_event.Z)
-        self.QM_current_magnitudes = self.Magnitude.calculate_magnitudes(self.QM_current_amplitudes)
-        self.mean_mag, _mean_mag_err, _mag_r_squared, _all_mags = self.Magnitude.mean_magnitude(self.QM_current_magnitudes)
-        print(self.QM_current_magnitudes)
+        # amps, ids = self.get_amplitudes(self.amplitude_prefix)
+        # dists = self.get_distances(amps)
+        # print(amps)
+        # self.QM_current_amplitudes = self.locate_run.reformat_amplitudes(amps, dists, ids, self.current_nll_event.Z)
+        self.magnitudes = self.Magnitude.calculate_magnitudes(self.amplitudes.loc[self.amplitudes.prefix==self.amplitude_prefix,:])
+        print(self.magnitudes)
+        self.mean_mag, _mean_mag_err, _mag_r_squared, _all_mags = self.Magnitude.mean_magnitude(self.magnitudes)
         print("MEAN MAG", self.mean_mag, _mean_mag_err)
+        print(_all_mags)
         self.plot_A0_magnitudes()
 
     def get_amplitudes(self, prefix):
         if not self.plotqm_amps_widget.isChecked():
-            df = self.current_amplitudes.loc[~self.current_amplitudes.QMFlag,:]
+            df = self.amplitudes.loc[self.amplitudes.is_picked,:]
         else:
-            df = self.current_amplitudes.copy()
+            df = self.amplitudes.copy()
 
+        df = df.loc[df.prefix==prefix,:]
         if self.select_Z_widget.isChecked():
-            amps = df.loc[(slice(None),"Z"), prefix+"Amplitude"]
-            ids = df.loc[(slice(None),"Z"), "StreamID"]
+            amps = df.loc[(slice(None),"Z"), self.locate_run.mag_params["amp_feature"]]
+            ids = df.loc[(slice(None),"Z"), "traceid"]
         else:
-            amps = df.loc[(slice(None),["E","N"]), prefix+"Amplitude"]
-            ids = df.loc[(slice(None),["E","N"]), "StreamID"]
+            amps = df.loc[(slice(None),["E","N"]), self.locate_run.mag_params["amp_feature"]]
+            ids = df.loc[(slice(None),["E","N"]), "traceid"]
             if self.combine_hor_widget.isChecked():
                 print(amps)
                 print(ids)
@@ -2165,6 +2162,8 @@ class MagnitudeWindow(QWidget):
         return np.asarray(distances)
 
     def plot_A0_magnitudes(self):
+        if self.a0_line:
+            self.a0_line.remove()
         dist_min = np.floor(self.ax.get_xlim()[0])
         if dist_min < 0.1:
             dist_min = 0.1
@@ -2175,7 +2174,7 @@ class MagnitudeWindow(QWidget):
         predicted_amp = np.power(10, self.mean_mag-att)
         # predicted_amp = self.mean_mag-att
 
-        self.ax.semilogy(distances, predicted_amp/1000, "r-")
+        self.a0_line,  = self.ax.semilogy(distances, predicted_amp, "r-")
         self.canvas.draw()
 
     def plot_amplitudes(self):
@@ -2286,9 +2285,6 @@ class MagnitudeWindow(QWidget):
         self.setLayout(overall_layout)
 
     def define_parameters(self):
-        self.current_amplitudes = None
-        self.manual_picks = None
-        self.current_nll_event = None
         self.A0 = self.locate_run.mag_params["A0"]
         self.Magnitude = None
 
@@ -2301,6 +2297,20 @@ class MagnitudeWindow(QWidget):
             self.a0_lookup = dict([(i, item) for i,item in enumerate(self._default_a0 + ["add_new"])])
         
         self.amplitude_prefix = "WA"
+
+        # seperate out the index to create new columns for easier indexing
+        self.amplitudes = self._convert_amps(self.current_amplitudes.copy())
+        self.a0_line = None
+    def _convert_amps(self, df):
+        df.loc[:,"network"] = [val.split(".")[0] for val in df.index]
+        df.loc[:,"station"] = [val.split(".")[1] for val in df.index]
+        df.loc[:,"location"] = [val.split(".")[2] for val in df.index]
+        df.loc[:,"channel"] = [val.split(".")[3] for val in df.index]
+        df.loc[:,"component"] = [val[-1] for val in df.loc[:,"channel"]]
+        df.loc[:,"prefix"] = [val.split(".")[4] for val in df.index]
+        df.loc[:,"traceid"] = df.index
+        df.set_index(["station", "component"], inplace=True)
+        return df
     def setup_connections(self):
         self.calc_mag_button.clicked.connect(self._clicked_calc_mag)
         self.slct_A0_widget.currentIndexChanged.connect(self._select_a0)
@@ -2310,8 +2320,12 @@ class MagnitudeWindow(QWidget):
         self.hypdist_widget.clicked.connect(self._redraw_plots)
         self.plotqm_amps_widget.clicked.connect(self._redraw_plots)
         self.canvas.mpl_connect("motion_notify_event", self._hover)
+        self.amp_update_signal.connect(self._update_amplitudes)
+    def _update_amplitudes(self):
+        self.amplitudes = self._convert_amps(self.current_amplitudes.copy())
+        self.init_plot()
     def init_plot(self):
-        pass
+        self.plot_amplitudes()
     def _get_distances(self, stations, try_this=[]):
         distances = []
         for station in stations:
@@ -2362,7 +2376,6 @@ class MagnitudeWindow(QWidget):
                     self.annot.set_visible(False)
                     self.highlighter.set_visible(False)
                     self.canvas.draw()
-
     def update_annot(self, ind):
         x,y = self.markers.get_data()
         self.highlighter.set_xdata([x[ind["ind"][0]]])
@@ -2372,6 +2385,7 @@ class MagnitudeWindow(QWidget):
         text = "{}".format(" ".join([self.names[n] for n in ind["ind"]]))
         self.annot.set_text(text)
         self.annot.get_bbox_patch().set_alpha(0.4)      
+
 if __name__ == '__main__':
     # app = QApplication([])
     if not QApplication.instance():

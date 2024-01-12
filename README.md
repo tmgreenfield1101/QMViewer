@@ -7,7 +7,7 @@ todo:
 - Write out triggered earthquake catalogues for relocation using locate. 
 - select events in the detect/trigger window
 - enable the ability to use archive waveforms rather than the saved waveforms from QM
-- enable add_new_A0 functionality
+- enable add_new_A0 functionality - do we even need this?
 - implement a better system of warnings and errors rather than print to screen
 - some faff with calculating magnitudes means it might be easier to use QM amplitude picking functionality. Should we bother with saving amplitude picks for real (may be more useful) and raw (probably not useful) traces?
 - currently user has to go to the magnitude page to calculate magnitude. Should a button be present on the picking page for calculating magnitude.

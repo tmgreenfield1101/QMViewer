@@ -1,11 +1,14 @@
 from yaml import safe_load, safe_dump
 import pandas as pd
 import numpy as np
+from obspy import UTCDateTime
 import subprocess
 import tempfile
 import struct
 import os
-
+import quakemigrate.util as util
+from quakemigrate.signal.local_mag import Amplitude
+from scipy.signal import iirfilter
 nll_phase_format = "{0:6s} {1:4s} {2:4s} {3:1s} {4:1s} {5:1s} {6:1s} GAU {7:9.2f} -1 {8:9.2f} {9:9.2f} 1"
 
 def read_settings(fpath):
@@ -117,6 +120,29 @@ class Filter():
                 "highpass":self._highpass, "corners":self._corners,
                 "zerophase":self._zerophase}
 
+    def as_sos(self, sampling_rate):
+        # Check specified freqmax is possible for this trace
+        f_nyquist = 0.5 * sampling_rate
+        if self._type == "none":
+            return None
+        elif self._type == "lowpass":
+            f_crit = self._lowpass/ f_nyquist
+        elif self._type == "highpass":
+            f_crit = self._highpass / f_nyquist
+        elif self._type == "bandpass":
+            low_f_crit = self._highpass / f_nyquist
+            high_f_crit = self._lowpass / f_nyquist
+        if high_f_crit - 1.0 > -1e-6:
+            raise util.NyquistException(self._lowpass, f_nyquist, sampling_rate)
+        # if f_crit - 1.0 > -1e-6:
+        #     raise util.NyquistException(self._lowpass, f_nyquist, sampling_rate)
+        return iirfilter(
+                    N=self._corners,
+                    Wn=[low_f_crit, high_f_crit],
+                    btype="bandpass",
+                    ftype="butter",
+                    output="sos",
+                )
 #     def __str__(self):
 #         return f"""
 # {type}
@@ -786,3 +812,118 @@ def _read_line_to_dict(line):
         raise ValueError("Length of line should be even", line, line_length)
     return dict([(line[i], line[i+1]) for i in range(0,line_length,2)])
 
+
+class myAmplitude(Amplitude):
+    """QM viewer implementation of the QM Amplitude class. Needed as QM viewer doesn't always 
+    use QM events"""
+
+    def _get_picks(self, station, manual_picks, qm_picks, nll_event, qm_otime):
+        if isinstance(nll_event, NonLinLocEvent) and (station, "P") in manual_picks.index and (station, "S") in manual_picks.index:
+            ppick = manual_picks.loc[(station, "P"), "PickTime"]
+            ptraveltime = time_offset(ppick, nll_event.otime)
+            spick = manual_picks.loc[(station, "S"), "PickTime"]
+            straveltime = time_offset(spick, nll_event.otime)
+            qmflag = False
+        elif isinstance(nll_event, NonLinLocEvent) and (station, "P") in manual_picks.index:
+            ppick = manual_picks.loc[(station, "P"), "PickTime"]
+            ptraveltime = time_offset(ppick, nll_event.otime)
+            straveltime = ptraveltime * 1.73
+            spick = ppick + pd.to_timedelta(straveltime-ptraveltime, unit="S")
+            qmflag = False
+        elif isinstance(nll_event, NonLinLocEvent) and (station, "S") in manual_picks.index:
+            spick = manual_picks.loc[(station, "S"), "PickTime"]
+            straveltime = time_offset(spick, nll_event.otime)
+            ptraveltime = straveltime / 1.73
+            ppick = spick - pd.to_timedelta(straveltime-ptraveltime, unit="S")
+            qmflag = False
+        elif (station, "P") in qm_picks.index and (station, "S") in qm_picks.index:
+            ppick = qm_picks.loc[(station, "P"), "ModelledTime"].tz_convert(None)
+            ptraveltime = time_offset(ppick, qm_otime)
+            spick = qm_picks.loc[(station, "S"), "ModelledTime"].tz_convert(None)
+            straveltime = time_offset(spick, qm_otime)
+            qmflag = True
+        elif (station, "P") in qm_picks.index:
+            ppick = qm_picks.loc[(station, "P"), "ModelledTime"].tz_convert(None)
+            ptraveltime = time_offset(ppick, qm_otime)
+            straveltime = ptraveltime * 1.73
+            spick = ppick + pd.to_timedelta(straveltime-ptraveltime, unit="S")
+            qmflag = True
+        elif (station, "S") in qm_picks.index:
+            spick = qm_picks.loc[(station, "S"), "ModelledTime"].tz_convert(None)
+            straveltime = time_offset(spick, qm_otime)
+            ptraveltime = straveltime / 1.73
+            ppick = spick - pd.to_timedelta(straveltime-ptraveltime, unit="S")
+            qmflag = True
+        else:
+            return None, None, None, None, None
+        
+        return ppick, ptraveltime, spick, straveltime, qmflag
+
+    def _get_amplitude_windows(
+        self, p_pick, p_ttime, s_pick, s_ttime, fraction_tt, marginal_window=1
+    ):
+        """
+        Calculate the start and end time of the windows to measure the max P- and S-wave
+        amplitudes in. This is done on the basis of the pick times, the event marginal
+        window, the traveltime and uncertainty and the specified S-wave signal window.
+
+        P_window_start : P_pick - marginal_window - traveltime_uncertainty
+        P_window_end : equivalent to start, or S_pick time; whichever is
+                       earlier
+        S_window_start : same as P
+        S_window_end : S_pick + signal_window + marginal_window +
+                       traveltime_uncertainty
+
+        traveltime_uncertainty = traveltime * fraction_tt
+            (where fraction_tt is as specified for the lookup table).
+
+        Parameters
+        ----------
+        p_ttimes : array-like
+            Array of interpolated P traveltimes to the requested grid position.
+        s_ttimes : array-like
+            Array of interpolated S traveltimes to the requested grid position.
+        fraction_tt : float
+            An estimate of the uncertainty in the velocity model as a function of the
+            traveltime.
+
+        Returns
+        -------
+        windows : array-like
+            [[P_window_start, P_window_end], [S_window_start, S_window_end]]
+
+        Raises
+        ------
+        PickOrderException
+            If the P pick for an event/station is later than the S pick.
+
+        """
+
+        # Check p_pick is before s_pick
+        try:
+            assert p_pick < s_pick
+        except AssertionError:
+            raise util.PickOrderException(p_pick, s_pick)
+
+        # For P:
+        p_start = UTCDateTime(p_pick - pd.to_timedelta(marginal_window - p_ttime * fraction_tt, unit="S"))
+        p_end = UTCDateTime(p_pick + pd.to_timedelta(marginal_window + p_ttime * fraction_tt, unit="S"))
+        # For S:
+        s_start = UTCDateTime(s_pick - pd.to_timedelta(marginal_window - s_ttime * fraction_tt, unit="S"))
+        s_end = UTCDateTime(
+            s_pick
+            + pd.to_timedelta(marginal_window
+            + s_ttime * fraction_tt
+            + self.signal_window, unit="S")
+        )
+
+        # Check for overlaps
+        if s_start < p_end:
+            mid_time = p_end + (s_start - p_end) / 2
+            windows = [[p_start, mid_time], [mid_time, s_end]]
+        elif s_start - p_end < self.signal_window:
+            windows = [[p_start, s_start], [s_start, s_end]]
+        else:
+            windows = [[p_start, p_end + self.signal_window], [s_start, s_end]]
+
+        return windows   

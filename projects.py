@@ -7,7 +7,6 @@ import os
 import ast
 
 from quakemigrate.io.data import WaveformData
-from quakemigrate.signal.local_mag import Magnitude
 
 manual_pick_columns = ["Network", "Station", "Location", "Channel", 
                        "Quality", "Polarity", "Type", "Phase",
@@ -266,6 +265,12 @@ class LocateRun():
         self.read_settings()
         self.read_events()
 
+        invpath = os.path.join(self.project.filepath, 
+                                self.response_file)
+        self.inventory = read_inventory(invpath)
+
+        self.amplitude = myAmplitude(self.amp_params)
+
     def __str__(self):
         raise NotImplementedError()
 
@@ -338,10 +343,7 @@ class LocateRun():
         wf = WaveformData(min([tr.stats.starttime for tr in st]), 
                             max([tr.stats.starttime for tr in st]),
                             stations=pd.Series(list(set([tr.stats.station for tr in st]))),
-                            response_inv=read_inventory(os.path.join(
-                                self.project.filepath, 
-                                self.response_file)
-                                ),
+                            response_inv=self.inventory,
                             water_level=self.response_params["water_level"],
                             pre_filt=self.response_params["pre_filt"],
                             remove_full_response=False,
@@ -369,34 +371,29 @@ class LocateRun():
         return picks
     
     def save_amplitude_picks(self, uid, picks, path):
-        os.makedirs(os.path.join(path, "amplitude_picks"), exist_ok=True)
-        picks.to_csv(os.path.join(path, "amplitude_picks", f"{uid}.csv"))
+        os.makedirs(os.path.join(path, f"amplitude_picks"), exist_ok=True)
+        picks.to_csv(os.path.join(path, f"amplitude_picks", f"{uid}.csv"))
         return
     def get_amplitude_picks(self, uid, path):
-        fname = os.path.join(path, "amplitude_picks", f"{uid}.csv")
+        fname = os.path.join(path, f"amplitude_picks", f"{uid}.csv")
         if not os.path.exists(fname):
             return pd.DataFrame([], columns=amplitude_pick_columns, index=amplitude_pick_index)
-        picks = pd.read_csv(fname, index_col=[0,1], parse_dates=[10,13,16], 
-                            dtype={"Network":str,
-                                   "Station":str,
-                                   "Channel":str,
-                                   "Location":str})
-        print(picks)
-        picks.rename(columns={"Station.1":"Station", "Component.1":"Component"}, inplace=True)
-        picks.loc[:,"Filter"] = picks.loc[:,"Filter"].apply(ast.literal_eval)
+        picks = pd.read_csv(fname, index_col=0, parse_dates=[5,10])
+        # picks.rename(columns={"Station.1":"Station", "Component.1":"Component"}, inplace=True)
+        picks.loc[:,"filter"] = picks.loc[:,"filter"].apply(ast.literal_eval)
         return picks
 
-    def reformat_amplitudes(self, amps, dists, ids, depth):
-        """reformats amplitudes to that used by QM for magnitude calculation"""
-        stations = [trid.split(".")[1] for trid in ids]
-        zdist = depth + self.project.stations.loc[stations,"Elevation"]
-        return pd.DataFrame({"epi_dist" : dists,"z_dist" : zdist.to_numpy(),
-                             "P_amp":np.nan,"P_freq":np.nan,"P_Time":pd.NaT,
-                             "P_avg_amp":np.nan,"P_filter_gain":np.nan,
-                             "S_amp":amps.to_numpy()*1e3, "S_freq":np.nan, "S_time":pd.NaT,
-                             "S_avg_amp":np.nan,"S_filter_gain":np.nan,
-                             "Noise_amp":0.0, "is_picked":True}, 
-                             index=ids.to_numpy())
+    # def reformat_amplitudes(self, amps, dists, ids, depth):
+    #     """reformats amplitudes to that used by QM for magnitude calculation"""
+    #     stations = [trid.split(".")[1] for trid in ids]
+    #     zdist = depth + self.project.stations.loc[stations,"Elevation"]
+    #     return pd.DataFrame({"epi_dist" : dists,"z_dist" : zdist.to_numpy(),
+    #                          "P_amp":np.nan,"P_freq":np.nan,"P_Time":pd.NaT,
+    #                          "P_avg_amp":np.nan,"P_filter_gain":np.nan,
+    #                          "S_amp":amps.to_numpy()*1e3, "S_freq":np.nan, "S_time":pd.NaT,
+    #                          "S_avg_amp":np.nan,"S_filter_gain":np.nan,
+    #                          "Noise_amp":0.0, "is_picked":True}, 
+    #                          index=ids.to_numpy())
 
 
 
